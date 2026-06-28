@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* BLACK BOX Front Desk — tokens charcoal + amber */
+:root {
+  --bg:          #0E0E0F;
+  --surface:     #1A1A1C;
+  --surface-2:   #141416;
+  --ink:         #FFFFFF;
+  --muted:       #8A8A8E;
+  --accent:      #F5A623;
+  --accent-soft: rgba(245, 166, 35, 0.14);
+  --success:     #5BBF7A;
+  --pending:     #F5A623;
+  --error:       #E05C5C;
+  --line:        #2A2A2C;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Scrollbars — dark minimal */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2A2A2C;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3A3A3E;
+}

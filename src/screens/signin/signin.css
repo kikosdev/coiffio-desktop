@@ -1,0 +1,69 @@
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes bbshake {
+    0%,  100% { transform: translateX(0); }
+    20%        { transform: translateX(-8px); }
+    40%        { transform: translateX(8px); }
+    60%        { transform: translateX(-6px); }
+    80%        { transform: translateX(6px); }
+  }
+
+  @keyframes bbpop {
+    0%   { transform: scale(0.4); opacity: 0; }
+    60%  { transform: scale(1.15); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+}
+
+.bbshake {
+  animation: bbshake 0.52s ease-in-out;
+}
+
+.bbpop {
+  animation: bbpop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* PIN pad key */
+.bbkey {
+  @apply flex items-center justify-center w-16 h-16 rounded-xl
+         bg-surface text-ink font-mono text-xl font-semibold
+         transition-transform duration-75 select-none cursor-pointer;
+}
+.bbkey:hover {
+  @apply bg-surface/80;
+}
+.bbkey:active {
+  transform: scale(0.94);
+}
+
+/* Staff card on landing */
+.bbstaff {
+  @apply flex flex-col items-center gap-2 p-4 rounded-card
+         bg-surface border border-line cursor-pointer
+         transition-all duration-200;
+}
+.bbstaff:hover {
+  transform: translateY(-3px);
+  @apply border-accent;
+}
+
+/* Input field wrapper */
+.bbfield {
+  @apply flex items-center gap-3 px-4 py-3 rounded-card
+         bg-surface border border-line transition-colors duration-150;
+}
+.bbfield:focus-within {
+  @apply border-accent;
+}
+
+/* Primary CTA button */
+.bbprimary {
+  @apply flex items-center justify-center w-full py-3 rounded-card
+         bg-accent text-bg font-semibold text-sm tracking-wide
+         transition-all duration-150 cursor-pointer select-none;
+}
+.bbprimary:hover {
+  filter: brightness(1.05);
+}
+.bbprimary:active {
+  transform: scale(0.98);
+}

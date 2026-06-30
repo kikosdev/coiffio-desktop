@@ -1,0 +1,38 @@
+{
+  "landing": {
+    "title": "Qui est à la caisse ?",
+    "subtitle": "Sélectionnez votre profil pour commencer",
+    "managerCta": "Connexion manager & propriétaire"
+  },
+  "pin": {
+    "title": "Entrez votre PIN",
+    "hint": "Code PIN à 4 chiffres",
+    "errorHint": "PIN incorrect — réessayez",
+    "notYou": "Pas vous ?",
+    "lockedMsg": "Trop de tentatives. Réessayez dans {{seconds}}s."
+  },
+  "manager": {
+    "title": "Connexion manager",
+    "emailPlaceholder": "manager@blackbox.com",
+    "passwordPlaceholder": "Mot de passe",
+    "cta": "Connexion à la caisse",
+    "forgot": "Mot de passe oublié ?",
+    "ownerNote": "Les comptes propriétaire sont provisionnés par Black Box HQ.",
+    "back": "Retour",
+    "errorLabel": "Identifiants invalides"
+  },
+  "brand": {
+    "greeting_morning": "BONJOUR",
+    "greeting_afternoon": "BONNE APRÈS-MIDI",
+    "greeting_evening": "BONSOIR",
+    "tagline": "La chaise est prête.",
+    "bookedToday": "Rendez-vous",
+    "barbersOn": "Coiffeurs présents",
+    "inQueue": "En attente",
+    "shopOpen": "Salon ouvert",
+    "shopClose": "ferme à 20h00",
+    "version": "v4.2",
+    "langFr": "FR",
+    "langAr": "AR"
+  }
+}

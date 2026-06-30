@@ -1,0 +1,38 @@
+{
+  "landing": {
+    "title": "من يكون عند الصندوق؟",
+    "subtitle": "اختر ملفك الشخصي للبدء",
+    "managerCta": "تسجيل دخول المدير والمالك"
+  },
+  "pin": {
+    "title": "أدخل رمز PIN",
+    "hint": "رمز PIN مكون من 4 أرقام",
+    "errorHint": "رمز PIN خاطئ — حاول مجدداً",
+    "notYou": "لست أنت؟",
+    "lockedMsg": "محاولات كثيرة. أعد المحاولة خلال {{seconds}} ثانية."
+  },
+  "manager": {
+    "title": "تسجيل دخول المدير",
+    "emailPlaceholder": "manager@blackbox.com",
+    "passwordPlaceholder": "كلمة المرور",
+    "cta": "تسجيل الدخول إلى الصندوق",
+    "forgot": "نسيت كلمة المرور؟",
+    "ownerNote": "يتم توفير حسابات المالك من قِبل Black Box HQ.",
+    "back": "رجوع",
+    "errorLabel": "بيانات الاعتماد غير صحيحة"
+  },
+  "brand": {
+    "greeting_morning": "صباح الخير",
+    "greeting_afternoon": "مساء الخير",
+    "greeting_evening": "مساء النور",
+    "tagline": "الكرسي جاهز.",
+    "bookedToday": "المواعيد",
+    "barbersOn": "الحلاقون الحاضرون",
+    "inQueue": "في الانتظار",
+    "shopOpen": "الصالون مفتوح",
+    "shopClose": "يغلق الساعة 8:00 م",
+    "version": "v4.2",
+    "langFr": "FR",
+    "langAr": "AR"
+  }
+}

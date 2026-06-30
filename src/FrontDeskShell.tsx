@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ShoppingCart, CalendarDays, Users2, BarChart3, Lock } from 'lucide-react';
 import { NewSaleView } from './views/NewSaleView';
 import { TodayBoardView } from './views/TodayBoardView';
 import { TeamView } from './views/TeamView';
 import { ReportsView } from './views/ReportsView';
+import { formatSalonTime } from './lib/time';
+import { storage } from './lib/storage';
 
 export type View = 'sale' | 'today' | 'team' | 'reports';
 
@@ -17,13 +20,20 @@ const NAV = [
 export function FrontDeskShell() {
   const [view, setView] = useState<View>('today');
   const [time, setTime] = useState(() => new Date());
+  const navigate = useNavigate();
 
+  // D-SIGNIN-7: clock in Africa/Tunis via formatSalonTime
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const timeStr = time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const timeStr = formatSalonTime(time);
+
+  function handleLock() {
+    storage.clearToken();
+    navigate('/signin', { replace: true });
+  }
 
   return (
     <div className="flex h-screen bg-bg text-ink overflow-hidden select-none">
@@ -63,11 +73,12 @@ export function FrontDeskShell() {
         <div className="flex flex-col items-center gap-3 shrink-0">
           <button
             title="Lock screen"
+            onClick={handleLock}
             className="text-muted hover:text-ink transition-colors"
           >
             <Lock size={14} strokeWidth={1.8} />
           </button>
-          <span className="font-mono text-[10px] text-muted leading-none">{timeStr}</span>
+          <span className="font-mono text-[10px] text-muted leading-none tabular-nums">{timeStr}</span>
           <div className="w-9 h-9 rounded-full bg-accent/10 border border-accent/30 flex items-center justify-center">
             <span className="text-[11px] font-bold text-accent">OP</span>
           </div>

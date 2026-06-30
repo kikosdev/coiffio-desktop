@@ -1,15 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, X, Plus, Minus, ChevronDown, CreditCard, Scissors, Wind, Palette, Package, Layers } from 'lucide-react';
-
-/* ── Types ──────────────────────────────────────────────────── */
-type Category = 'all' | 'hair' | 'beard' | 'color' | 'product';
+import { api } from '../lib/api';
 
 interface CatalogItem {
   id: string;
   name: string;
   price: number;
-  duration?: number;
-  category: Category;
+  durationMin?: number;
+  category: string;
+}
+
+interface Barber {
+  id: string;
+  name: string;
+  initials: string;
+  color: string;
 }
 
 interface CartLine {
@@ -19,87 +24,78 @@ interface CartLine {
   barberId: string;
 }
 
-/* ── Mock data ─────────────────────────────────────────────── */
-const CATALOG: CatalogItem[] = [
-  { id: 's1',  name: 'Classic Cut',        price: 25,  duration: 30,  category: 'hair'    },
-  { id: 's2',  name: 'Fade',               price: 30,  duration: 35,  category: 'hair'    },
-  { id: 's3',  name: 'Kid Cut',            price: 20,  duration: 25,  category: 'hair'    },
-  { id: 's4',  name: 'Shampoo + Blow Dry', price: 20,  duration: 30,  category: 'hair'    },
-  { id: 's5',  name: 'Beard Trim',         price: 15,  duration: 20,  category: 'beard'   },
-  { id: 's6',  name: 'Hot Towel Shave',    price: 35,  duration: 45,  category: 'beard'   },
-  { id: 's7',  name: 'Line-up',            price: 12,  duration: 15,  category: 'beard'   },
-  { id: 's8',  name: 'Full Color',         price: 85,  duration: 90,  category: 'color'   },
-  { id: 's9',  name: 'Highlights',         price: 120, duration: 120, category: 'color'   },
-  { id: 's10', name: 'Toning',             price: 50,  duration: 60,  category: 'color'   },
-  { id: 'p1',  name: 'Pomade Classic',     price: 18,                  category: 'product' },
-  { id: 'p2',  name: 'Beard Oil 30ml',     price: 22,                  category: 'product' },
-  { id: 'p3',  name: 'Hair Wax',           price: 15,                  category: 'product' },
-  { id: 'p4',  name: 'Sea Salt Spray',     price: 19,                  category: 'product' },
-];
-
-const BARBERS = [
-  { id: 'b1', name: 'Karim',   initials: 'KM', color: '#E05C5C' },
-  { id: 'b2', name: 'Youssef', initials: 'YB', color: '#5BBF7A' },
-  { id: 'b3', name: 'Marcus',  initials: 'MD', color: '#9B59B6' },
-  { id: 'b4', name: 'Sonia',   initials: 'SB', color: '#F5A623' },
-];
+const CATEGORY_ICON: Record<string, React.ElementType> = {
+  hair:    Scissors,
+  beard:   Wind,
+  color:   Palette,
+  product: Package,
+};
 
 const TAX_RATE = 0.19;
 
-const TABS: { id: Category; label: string; Icon: React.ElementType }[] = [
-  { id: 'all',     label: 'All',          Icon: Layers   },
-  { id: 'hair',    label: 'Hair',         Icon: Scissors },
-  { id: 'beard',   label: 'Beard & Shave',Icon: Wind     },
-  { id: 'color',   label: 'Color',        Icon: Palette  },
-  { id: 'product', label: 'Products',     Icon: Package  },
-];
-
-/* ── Helpers ─────────────────────────────────────────────────── */
 function uid() {
   return Math.random().toString(36).slice(2);
 }
 
-/* ── Component ─────────────────────────────────────────────── */
 export function NewSaleView() {
-  const [tab,        setTab]        = useState<Category>('all');
-  const [search,     setSearch]     = useState('');
-  const [cart,       setCart]       = useState<CartLine[]>([]);
-  const [mode,       setMode]       = useState<'walkin' | 'booked'>('walkin');
-  const [defaultBarber, setDefaultBarber] = useState('b1');
-  const [charged,    setCharged]    = useState(false);
+  const [catalog,        setCatalog]        = useState<CatalogItem[]>([]);
+  const [barbers,        setBarbers]        = useState<Barber[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [activeCategory, setActiveCategory] = useState<string>('all');
+  const [search,         setSearch]         = useState('');
+  const [cart,           setCart]           = useState<CartLine[]>([]);
+  const [mode,           setMode]           = useState<'walkin' | 'booked'>('walkin');
+  const [defaultBarber,  setDefaultBarber]  = useState('');
+  const [charged,        setCharged]        = useState(false);
 
-  /* ── Catalogue filtering ─────────────────────────────────── */
-  const visible = CATALOG.filter(item => {
-    const matchCat = tab === 'all' || item.category === tab;
+  useEffect(() => {
+    Promise.all([
+      api.get<CatalogItem[]>('/pos/catalog'),
+      api.get<{ id: string; first: string; initial: string; color: string }[]>('/pos/roster'),
+    ]).then(([cat, roster]) => {
+      setCatalog(cat);
+      const mapped: Barber[] = roster.map((r) => ({
+        id: r.id,
+        name: r.first,
+        initials: r.initial,
+        color: r.color,
+      }));
+      setBarbers(mapped);
+      if (mapped.length) setDefaultBarber(mapped[0].id);
+    })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const categories = ['all', ...new Set(catalog.map((i) => i.category).filter(Boolean))];
+
+  const visible = catalog.filter((item) => {
+    const matchCat = activeCategory === 'all' || item.category === activeCategory;
     const matchQ   = item.name.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchQ;
   });
 
-  /* ── Cart actions ────────────────────────────────────────── */
   function addItem(item: CatalogItem) {
-    setCart(prev => {
-      const existing = prev.find(l => l.item.id === item.id && l.barberId === defaultBarber);
-      if (existing) {
-        return prev.map(l => l.uid === existing.uid ? { ...l, qty: l.qty + 1 } : l);
-      }
+    if (!defaultBarber) return;
+    setCart((prev) => {
+      const existing = prev.find((l) => l.item.id === item.id && l.barberId === defaultBarber);
+      if (existing) return prev.map((l) => l.uid === existing.uid ? { ...l, qty: l.qty + 1 } : l);
       return [...prev, { uid: uid(), item, qty: 1, barberId: defaultBarber }];
     });
   }
 
   function removeItem(lineUid: string) {
-    setCart(prev => prev.filter(l => l.uid !== lineUid));
+    setCart((prev) => prev.filter((l) => l.uid !== lineUid));
   }
 
   function changeQty(lineUid: string, delta: number) {
-    setCart(prev =>
-      prev
-        .map(l => l.uid === lineUid ? { ...l, qty: l.qty + delta } : l)
-        .filter(l => l.qty > 0)
+    setCart((prev) =>
+      prev.map((l) => l.uid === lineUid ? { ...l, qty: l.qty + delta } : l).filter((l) => l.qty > 0)
     );
   }
 
   function changeBarber(lineUid: string, barberId: string) {
-    setCart(prev => prev.map(l => l.uid === lineUid ? { ...l, barberId } : l));
+    setCart((prev) => prev.map((l) => l.uid === lineUid ? { ...l, barberId } : l));
   }
 
   function clearCart() {
@@ -107,70 +103,72 @@ export function NewSaleView() {
     setCharged(false);
   }
 
-  /* ── Totals ─────────────────────────────────────────────── */
   const subtotal = cart.reduce((s, l) => s + l.item.price * l.qty, 0);
   const tax      = subtotal * TAX_RATE;
   const total    = subtotal + tax;
-
-  const fmt = (n: number) => n.toFixed(3).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const fmt      = (n: number) => n.toFixed(3).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 
   return (
     <div className="flex h-full overflow-hidden">
 
-      {/* ── LEFT: Catalogue ────────────────────────────────── */}
+      {/* LEFT: Catalogue */}
       <div className="flex-1 flex flex-col overflow-hidden border-r border-line">
-
-        {/* Header */}
         <div className="px-6 pt-5 pb-4 shrink-0">
           <h1 className="text-base font-semibold mb-4">New Sale</h1>
 
-          {/* Search */}
           <div className="relative mb-4">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="Search services or products…"
               className="w-full bg-surface border border-line rounded-xl pl-9 pr-4 py-2.5 text-sm text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors"
             />
           </div>
 
-          {/* Tabs */}
           <div className="flex gap-1 overflow-x-auto pb-1">
-            {TABS.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                onClick={() => setTab(id)}
-                className={[
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0',
-                  tab === id
-                    ? 'bg-accent/10 text-accent border border-accent/30'
-                    : 'text-muted hover:text-ink hover:bg-surface border border-transparent',
-                ].join(' ')}
-              >
-                <Icon size={12} />
-                {label}
-              </button>
-            ))}
+            {categories.map((cat) => {
+              const Icon = cat === 'all' ? Layers : (CATEGORY_ICON[cat] ?? Layers);
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setActiveCategory(cat)}
+                  className={[
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0',
+                    activeCategory === cat
+                      ? 'bg-accent/10 text-accent border border-accent/30'
+                      : 'text-muted hover:text-ink hover:bg-surface border border-transparent',
+                  ].join(' ')}
+                >
+                  <Icon size={12} />
+                  {cat === 'all' ? 'All' : cat}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {/* Grid */}
         <div className="flex-1 overflow-y-auto px-6 pb-6">
-          {visible.length === 0 ? (
+          {loading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              {[1,2,3,4,5,6].map((i) => (
+                <div key={i} className="bg-surface rounded-card p-4 h-24 animate-pulse" />
+              ))}
+            </div>
+          ) : visible.length === 0 ? (
             <div className="flex items-center justify-center h-40 text-muted text-sm">
-              No results for "{search}"
+              {search ? `No results for "${search}"` : 'No services in catalog yet.'}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-              {visible.map(item => (
+              {visible.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => addItem(item)}
                   className="bg-surface rounded-card p-4 text-left hover:border-accent/40 border border-line transition-all duration-150 group active:scale-[0.98]"
                 >
-                  {item.duration && (
-                    <span className="text-[10px] text-muted mb-1.5 block">{item.duration} min</span>
+                  {item.durationMin && (
+                    <span className="text-[10px] text-muted mb-1.5 block">{item.durationMin} min</span>
                   )}
                   <span className="block text-sm font-medium leading-snug mb-3 group-hover:text-ink">
                     {item.name}
@@ -185,10 +183,8 @@ export function NewSaleView() {
         </div>
       </div>
 
-      {/* ── RIGHT: Current Ticket ──────────────────────────── */}
+      {/* RIGHT: Current Ticket */}
       <div className="w-[320px] shrink-0 flex flex-col bg-surface-2 overflow-hidden">
-
-        {/* Header */}
         <div className="px-5 pt-5 pb-4 shrink-0 border-b border-line">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold">Current Ticket</h2>
@@ -199,9 +195,8 @@ export function NewSaleView() {
             )}
           </div>
 
-          {/* Walk-in / Booked toggle */}
           <div className="flex bg-surface rounded-lg p-0.5 mb-4">
-            {(['walkin', 'booked'] as const).map(m => (
+            {(['walkin', 'booked'] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
@@ -215,25 +210,25 @@ export function NewSaleView() {
             ))}
           </div>
 
-          {/* Default barber selector */}
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted shrink-0">New items go to</span>
-            <div className="relative flex-1">
-              <select
-                value={defaultBarber}
-                onChange={e => setDefaultBarber(e.target.value)}
-                className="w-full appearance-none bg-surface border border-line rounded-lg px-2.5 py-1.5 text-xs text-ink outline-none focus:border-accent/50 cursor-pointer pr-6"
-              >
-                {BARBERS.map(b => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </select>
-              <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+          {barbers.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted shrink-0">New items go to</span>
+              <div className="relative flex-1">
+                <select
+                  value={defaultBarber}
+                  onChange={(e) => setDefaultBarber(e.target.value)}
+                  className="w-full appearance-none bg-surface border border-line rounded-lg px-2.5 py-1.5 text-xs text-ink outline-none focus:border-accent/50 cursor-pointer pr-6"
+                >
+                  {barbers.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={10} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Cart lines */}
         <div className="flex-1 overflow-y-auto px-5 py-3">
           {cart.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted">
@@ -242,8 +237,9 @@ export function NewSaleView() {
             </div>
           ) : (
             <div className="space-y-2">
-              {cart.map(line => {
-                const barber = BARBERS.find(b => b.id === line.barberId)!;
+              {cart.map((line) => {
+                const barber = barbers.find((b) => b.id === line.barberId) ?? barbers[0];
+                if (!barber) return null;
                 return (
                   <div key={line.uid} className="bg-surface rounded-xl p-3">
                     <div className="flex items-start justify-between mb-2">
@@ -259,15 +255,14 @@ export function NewSaleView() {
                     </div>
 
                     <div className="flex items-center justify-between">
-                      {/* Barber badge */}
                       <div className="relative">
                         <select
                           value={line.barberId}
-                          onChange={e => changeBarber(line.uid, e.target.value)}
+                          onChange={(e) => changeBarber(line.uid, e.target.value)}
                           className="appearance-none pl-6 pr-4 py-1 rounded-full text-[10px] font-medium text-ink outline-none cursor-pointer border border-line bg-surface-2"
                           style={{ background: `${barber.color}1A` }}
                         >
-                          {BARBERS.map(b => (
+                          {barbers.map((b) => (
                             <option key={b.id} value={b.id}>{b.name}</option>
                           ))}
                         </select>
@@ -279,7 +274,6 @@ export function NewSaleView() {
                         </span>
                       </div>
 
-                      {/* Qty + price */}
                       <div className="flex items-center gap-2">
                         <div className="flex items-center gap-1">
                           <button
@@ -308,7 +302,6 @@ export function NewSaleView() {
           )}
         </div>
 
-        {/* Totals + Charge */}
         <div className="px-5 pt-3 pb-5 shrink-0 border-t border-line">
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-xs text-muted">

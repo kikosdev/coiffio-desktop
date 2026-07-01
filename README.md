@@ -1,136 +1,152 @@
-# SalonOS — Desktop « BLACK BOX Front Desk » (Borne de caisse)
+# salon-desktop
 
-> **Cible :** nouvelle app `salon-desktop/` (Tauri 2), surface **front-desk à 4 vues**.
-> **Réutilise :** `salon-frontend/` (ui-kit, design tokens, features/finance, socket-events).
-> **Hérite de :** `SKILL.md`, `SKILL_finance_pos.md`, `new_design.md`.
-> **Décisions :** #8 (refund owner-only), #9 (scope paie stylist), tokens-only, TND/millimes.
-> **Réf design :** Claude Design — « Black Box POS - Front Desk (standalone) » (4 captures validées).
+**BLACK BOX POS** — kiosk front-desk app for salon staff. Runs in a browser or Electron/Tauri window at the front desk.
 
 ---
 
-## 🎯 Scope réel : 4 vues, pas une
+## Tech stack
 
-La borne n'est pas qu'un POS. C'est un poste d'accueil complet avec son propre nav rail latéral
-(logo BB en haut, avatar opérateur en bas) et 4 surfaces :
-
-| Vue | Rôle | Contenu |
-|---|---|---|
-| **New sale** (POS) | encaisser | Grid services/produits avec onglets (All·Hair·Beard·Color·Products), recherche, **panier "Current Ticket"** avec toggle Walk-in/Booked, **assignation barber par ligne**, « New items go to », subtotal/tax/total, bouton **Charge** |
-| **Today** (board) | piloter le flux | Kanban **Waiting / In chair / Done**, cartes client+service+barber, actions **Start→ / Check out→**, badges (Waited 8min, Booked, Walk-in, Paid $X), header **Add walk-in + Open register** |
-| **Team** | qui est libre/occupé | Cartes barbers : statut **On shift / On break**, « Now · <client en cours / Available / Back at 1:30> », stats **Cuts today · Revenue · Rating** |
-| **Reports** | clôture du jour | 4 KPI (Revenue·Bookings·Avg ticket·Tips), **Revenue by barber** (barres), **Top services**, **Payment mix** (Card/Cash/Apple Pay) |
-
-> Le **Check out→** du board route vers **New sale** pré-rempli → boucle d'encaissement.
-
----
-
-## 🎨 Thème BLACK BOX (charcoal + amber)
-
-Le design est **dark premium** avec accent **amber/saffron saturé** (≈ `#F5A623`), plus vif que le
-champagne `#D4B481` de `new_design.md`.
-
-**Décision tokens (à valider) :** ajouter un accent dédié au surface front-desk plutôt que de
-réutiliser le champagne tel quel :
-```
---bg:               #0E0E0F   /* near-black */
---surface:          #1A1A1C   /* cartes */
---surface-2:        #141416
---ink:              #FFFFFF
---muted:            #8A8A8E
---accent:           #F5A623   /* amber — CTA, barres, sélection active */
---accent-soft:      rgba(245,166,35,0.14)
---success:          #5BBF7A   /* On shift, Paid */
---pending:          #F5A623   /* On break, waiting */
-```
-- Chiffres / montants : **JetBrains Mono**.
-- Zéro hex hardcodé dans les composants — tokens uniquement.
-- Avatars barbers = pastilles colorées + initiale (couleur stable par barber).
-
----
-
-## 🏗️ Architecture
-
-```
-salon-desktop/                       Tauri 2 (Rust shell + WebView)
-├── src/
-│   ├── main.tsx                     entry borne
-│   ├── FrontDeskShell.tsx           nav rail + routing 4 vues + statut sync + lock
-│   ├── views/
-│   │   ├── NewSaleView.tsx          réutilise features/finance + assignation barber/ligne
-│   │   ├── TodayBoardView.tsx       kanban waiting/in_chair/done
-│   │   ├── TeamView.tsx             statut live barbers
-│   │   └── ReportsView.tsx          clôture jour (réutilise /reports)
-│   └── (imports depuis salon-frontend via workspace)
-├── src-tauri/
-│   └── src/{main.rs, printer.rs, cash_drawer.rs, scanner.rs, updater.rs}
-└── package.json
-```
-
-**Monorepo workspace** : `salon-desktop` + `salon-frontend` partagent ui-kit, tokens,
-`features/finance/`, `socket-events.ts`. Pas de duplication de logique.
-
----
-
-## 🔌 Intégration backend
-
-| Vue / action | Endpoint | Note |
-|---|---|---|
-| New sale → encaisser | `POST /payments` (génère `Sale` source:'pos') | items service+produit, **stylistId par ligne** |
-| New sale → catalogue | `GET /services`, `GET /products` | onglets = `category` |
-| Today board → liste | `GET /booking?date=today` | filtré par `serviceState` |
-| Today board → Start / Check out | `PATCH /booking/:id/state` | **transitions waiting→in_chair→done** |
-| Team → statut live | `GET /team/live` + socket | « Now » dérivé du booking in_chair |
-| Reports | `GET /reports?period=day`, `/reports/export.csv` | KPI + ventilations |
-| Refund | `POST /payments/:id/refund` | **owner-only** (#8) |
-
-### ⚠️ Extension backend requise (Today board)
-Les statuts V1 (`booked/completed/cancelled`) **ne couvrent pas** Waiting/In-chair/Done.
-**À ajouter** : `Booking.serviceState: 'waiting'|'in_chair'|'done'` + endpoint
-`PATCH /booking/:id/state` + émission socket pour le live board. Sans ça le board est cosmétique.
-
----
-
-## 🔐 Sécurité borne
-
-- **Lock screen PIN par stylist** → résout `req.user` → `GET /caisse/me` strictement scopé (#9).
-- **Per-line barber assignment** : chaque ligne du ticket porte son `stylistId` (commission correcte).
-- **Refund invisible** sauf owner (garde UI + garde API, #8).
-- Tauri allowlist minimale : `http` limité au backend, `fs` limité à la queue offline, pas de
-  `shell.open` arbitraire. Auto-update **signé**.
-
----
-
-## 💾 Offline-resilient
-
-- POST /payments hors-ligne → **queue locale** (SQLite tauri-plugin-sql) → rejeu à la reconnexion.
-- Rejeu **transactionnel** ; rejet `stock insuffisant` (FIN-11) → **flag revue manager**, jamais
-  d'auto-correction silencieuse.
-- Today board en lecture : cache last-known + bannière « hors-ligne ».
-
----
-
-## ✅ Definition of Done
-
-- [ ] Tauri kiosk plein écran + autostart + single-instance
-- [ ] Nav rail + 4 vues fidèles aux captures
-- [ ] Thème charcoal+amber pixel-match (tokens, zéro hex)
-- [ ] New sale : grid+onglets, panier, **assignation barber par ligne**, Walk-in/Booked, Charge
-- [ ] Today board : kanban Waiting/In-chair/Done + Start/Check-out → **nécessite `serviceState` backend**
-- [ ] Team : statut live On-shift/On-break + « Now » + stats
-- [ ] Reports : 4 KPI + revenue/barber + top services + payment mix + export CSV
-- [ ] Lock PIN stylist → scope #9 · refund owner-only #8
-- [ ] Imprimante ESC/POS + tiroir + scanner code-barres
-- [ ] Offline queue + rejeu avec gestion conflit stock
-- [ ] Auto-update signé + build `.msi` Windows
-
----
-
-## ⚠️ Risques / arbitrages
-
-| Risque | Mitigation |
+| Layer | Choice |
 |---|---|
-| **Today board cosmétique** si pas de `serviceState` backend | Prioriser l'extension `PATCH /booking/:id/state` |
-| **Theme amber non documenté** dérive vs charte | Officialiser `--accent` front-desk dans les tokens |
-| **Overselling** au rejeu offline | Rejeu transactionnel + flag revue |
-| **Diversité imprimantes ESC/POS** | Cibler Epson TM-T20 d'abord, abstraire ensuite |
-| **2 builds front à maintenir** | Monorepo workspace, front partagé |
+| Framework | React 18 + Vite |
+| Routing | React Router v6 |
+| State | Zustand |
+| HTTP | Axios (custom client in `src/lib/api.ts`) |
+| i18n | i18next + react-i18next (FR / AR + RTL) |
+| Date / time | date-fns-tz (`Africa/Tunis`) |
+| Icons | Lucide React |
+| Real-time | Socket.io-client |
+
+---
+
+## Running locally
+
+```bash
+cd salon-desktop
+npm install
+npm run dev          # Vite dev server on http://localhost:5174
+```
+
+### Environment variables (`.env`)
+
+```
+VITE_API_URL=https://coif-backend.onrender.com/api
+```
+
+Change to `http://localhost:3000/api` to point at a local backend.
+
+---
+
+## No dummy data
+
+All data is live from the backend API. No static/mock files.  
+**Exception:** The brand panel stat cards on the sign-in screen show `--` because `GET /pos/summary` is not implemented yet (`// SWAP: GET /pos/summary` comment in `BrandPanel.tsx`).
+
+---
+
+## App structure
+
+```
+src/
+  lib/
+    api.ts        Axios client — reads Bearer token, unwraps {data,message} envelope
+    storage.ts    Token adapter (sessionStorage now; SWAP comment for Tauri secure store)
+    time.ts       formatSalonTime() + getSalonGreeting() — Africa/Tunis timezone
+  theme/
+    blackbox.ts   JS color constants + staffAvatarColor(seed) helper
+  i18n/
+    index.ts      i18next init (FR default, AR optional, namespace: 'signin')
+    locales/
+      fr.json     French strings for sign-in screen
+      ar.json     Arabic strings for sign-in screen
+  stores/
+    useSignin.ts  Zustand store for sign-in state machine
+  screens/
+    signin/
+      index.tsx       SignInScreen — 2-column layout, i18n dir effect
+      BrandPanel.tsx  Left 560px panel — live clock, greeting, stats placeholder, FR/AR toggle
+      LandingView.tsx Staff grid from GET /pos/roster
+      StaffCard.tsx   Avatar, online dot, PRO badge
+      PinView.tsx     4-digit PIN pad, shake animation, bbpop checkmark
+      ManagerView.tsx Email + password form with eye toggle
+      signin.css      Keyframe animations (bbshake, bbpop) + utility classes
+  views/
+    TodayBoardView.tsx   Today's appointment board (live via API)
+    NewSaleView.tsx      POS sale interface (live via API)
+    TeamView.tsx         Team management view
+    ReportsView.tsx      Sales reports
+  components/            Shared UI components
+  FrontDeskShell.tsx     Main app shell after sign-in (tabs: Today · Ventes · Team · Reports)
+  main.tsx               BrowserRouter: /signin → SignInScreen, /pos → PosGuard → FrontDeskShell
+```
+
+---
+
+## Sign-in flow
+
+The app has 3 views managed by `useSignin.ts`:
+
+```
+/signin
+  └─ LandingView    Staff grid (GET /pos/roster)
+       └─ PinView   4-digit PIN pad → POST /auth/login-pin
+  └─ ManagerView    Email + password → POST /auth/login
+       └─ /pos      FrontDeskShell (guarded by PosGuard)
+```
+
+**PinView auto-submits when the 4th digit is entered** (no confirm button).
+
+**Lockout:** 5 wrong PINs → 30 s lockout. The remaining-seconds message comes from the backend.
+
+**Token storage:** `sessionStorage` key `bb_pos_token`. A `// SWAP: Tauri secure store` comment marks the seam for future native app migration.
+
+---
+
+## POS guard
+
+`PosGuard` in `src/components/PosGuard.tsx` checks `storage.hasToken()` synchronously. If no token → redirect to `/signin`. This is a synchronous sessionStorage check; the `// SWAP` comment marks where to add an async Tauri secure store read + loading state.
+
+Lock screen button in `FrontDeskShell.tsx` calls `storage.clearToken()` then `navigate('/signin')`.
+
+---
+
+## i18n / RTL
+
+- Default language: French (`fr`)
+- AR toggle available in BrandPanel footer
+- Switching to AR sets `document.documentElement.dir = 'rtl'`; switching back sets `ltr`
+- The effect resets to `ltr` on `SignInScreen` unmount (rest of the app is LTR only)
+
+---
+
+## Staff must be POS-enabled
+
+A staff member only appears on the kiosk grid if:
+1. `isActive: true`
+2. `posEnabled: true`
+3. `pinHash` is set
+
+Run the seed script in `salon-backend/` to enable staff:
+
+```bash
+cd salon-backend
+SEED_PIN=5678 npx ts-node src/scripts/seed-pos-pins.ts
+```
+
+`SEED_PIN=1234` is blocked by the script.
+
+---
+
+## Key design tokens
+
+Accent: `#F5A623` (one shade lighter than the mobile gold — used for PIN dot active state, CTA buttons, avatar halos).  
+All colors are in `src/theme/blackbox.ts`. Components use Tailwind classes or the JS constants for inline SVG fills only.
+
+---
+
+## Future / planned
+
+- `// SWAP: Tauri secure store` — replace sessionStorage with `tauri-plugin-stronghold` for native token storage
+- `// SWAP: GET /pos/summary` — brand panel stat cards (appointments today, revenue today, next client)
+- `// TODO RegisterSession` — `POST /pos/clock-in` will eventually also open a register session record
+- Multi-language expansion beyond FR/AR

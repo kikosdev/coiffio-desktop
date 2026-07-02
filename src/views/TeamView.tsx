@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Coffee, Scissors } from 'lucide-react';
+import { Clock, Coffee, Scissors } from 'lucide-react';
 import { api } from '../lib/api';
+import { getShiftStatus, type ShiftStatus, type WeekSlot } from '../lib/shift';
 
 interface RosterCard {
   id: string;
@@ -9,8 +10,7 @@ interface RosterCard {
   color: string;
   role: string;
   pro: boolean;
-  onShift: boolean;
-  statusLabel: string;
+  week: WeekSlot[];
 }
 
 interface TodayAppt {
@@ -38,6 +38,7 @@ export function TeamView() {
   const [roster,    setRoster]    = useState<RosterCard[]>([]);
   const [appts,     setAppts]     = useState<TodayAppt[]>([]);
   const [loading,   setLoading]   = useState(true);
+  const [now,       setNow]       = useState(() => new Date());
 
   useEffect(() => {
     Promise.all([
@@ -49,7 +50,15 @@ export function TeamView() {
       .finally(() => setLoading(false));
   }, []);
 
-  const onShift = roster.filter((m) => m.onShift).length;
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const shiftStatus = (member: RosterCard): ShiftStatus =>
+    getShiftStatus({ isActive: true, week: member.week }, undefined, now);
+
+  const onShift = roster.filter((m) => shiftStatus(m) === 'on-shift').length;
   const total   = roster.length;
 
   return (
@@ -88,6 +97,7 @@ export function TeamView() {
               <MemberCard
                 key={member.id}
                 member={member}
+                status={shiftStatus(member)}
                 appts={appts}
               />
             ))}
@@ -98,9 +108,16 @@ export function TeamView() {
   );
 }
 
-function MemberCard({ member, appts }: { member: RosterCard; appts: TodayAppt[] }) {
+const STATUS_META: Record<ShiftStatus, { label: string; icon: typeof Scissors; badgeClass: string }> = {
+  'on-shift': { label: 'On shift',   icon: Scissors, badgeClass: 'bg-success/10 text-success' },
+  'on-break': { label: 'On break',   icon: Coffee,   badgeClass: 'bg-surface-2 text-muted' },
+  off:        { label: 'Off today',  icon: Clock,    badgeClass: 'bg-surface-2 text-muted' },
+};
+
+function MemberCard({ member, status, appts }: { member: RosterCard; status: ShiftStatus; appts: TodayAppt[] }) {
   const { cuts, revenue, inChair } = staffStats(member.id, appts);
-  const isOnShift = member.onShift;
+  const isOnShift = status === 'on-shift';
+  const { label, icon: StatusIcon, badgeClass } = STATUS_META[status];
 
   return (
     <div className={`bg-surface rounded-2xl p-5 flex flex-col gap-4 transition-opacity ${isOnShift ? '' : 'opacity-50'}`}>
@@ -119,15 +136,10 @@ function MemberCard({ member, appts }: { member: RosterCard; appts: TodayAppt[] 
         <div
           className={[
             'flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full shrink-0',
-            isOnShift
-              ? 'bg-success/10 text-success'
-              : 'bg-surface-2 text-muted',
+            badgeClass,
           ].join(' ')}
         >
-          {isOnShift
-            ? <><Scissors size={9} /> On shift</>
-            : <><Coffee size={9} /> Off</>
-          }
+          <StatusIcon size={9} /> {label}
         </div>
       </div>
 
@@ -138,7 +150,7 @@ function MemberCard({ member, appts }: { member: RosterCard; appts: TodayAppt[] 
             {inChair.client} — {inChair.service}
           </div>
         ) : (
-          <div className="text-xs text-muted">{member.statusLabel}</div>
+          <div className="text-xs text-muted">{label}</div>
         )}
       </div>
 

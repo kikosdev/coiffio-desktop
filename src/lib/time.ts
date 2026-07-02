@@ -23,3 +23,14 @@ export function getSalonGreeting(date: Date): 'morning' | 'afternoon' | 'evening
   if (hour < 18) return 'afternoon';
   return 'evening';
 }
+
+/** yyyy-MM-dd in Africa/Tunis — the board's date param, never toISOString(). */
+export function salonDateKey(date: Date): string {
+  return format(toZonedTime(date, SALON_TZ), 'yyyy-MM-dd', { timeZone: SALON_TZ });
+}
+
+/** Human label for the board header, e.g. "Thu 9 July". */
+export function formatSalonDayLabel(dateStr: string): string {
+  const zoned = toZonedTime(`${dateStr}T12:00:00Z`, SALON_TZ);
+  return format(zoned, 'EEE d MMMM', { timeZone: SALON_TZ });
+}

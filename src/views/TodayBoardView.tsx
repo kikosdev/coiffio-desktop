@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Clock, Plus, DollarSign, BookOpen, User } from 'lucide-react';
+import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { api } from '../lib/api';
+import { useBoard } from '../stores/useBoard';
+import { salonDateKey, formatSalonDayLabel } from '../lib/time';
 
 interface TodayAppt {
   id: string;
@@ -14,6 +16,20 @@ interface TodayAppt {
   price: number;
   status: string;
   column: 'waiting' | 'in_chair' | 'done';
+}
+
+interface RosterCard {
+  id: string;
+  first: string;
+  color: string;
+  onShift: boolean;
+}
+
+interface CatalogItem {
+  id: string;
+  name: string;
+  price: number;
+  durationMin: number;
 }
 
 interface TodayBoardViewProps {
@@ -124,35 +140,173 @@ function KanbanColumn({ title, cards, accentClass, onCheckout }: ColumnProps) {
   );
 }
 
-export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
-  const [appts,   setAppts]   = useState<TodayAppt[]>([]);
-  const [loading, setLoading] = useState(true);
+// ── Add walk-in modal ───────────────────────────────────────────────────────
+
+function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [roster, setRoster] = useState<RosterCard[]>([]);
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [stylistId, setStylistId] = useState('');
+  const [serviceId, setServiceId] = useState('');
+  const [clientName, setClientName] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    api.get<TodayAppt[]>('/pos/today')
-      .then(setAppts)
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([api.get<RosterCard[]>('/pos/roster'), api.get<CatalogItem[]>('/pos/catalog')])
+      .then(([r, c]) => { setRoster(r); setCatalog(c); })
+      .catch(() => {});
   }, []);
+
+  const canSubmit = !!stylistId && !!serviceId && clientName.trim() !== '' && clientPhone.trim() !== '';
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await api.post('/pos/walkin', {
+        stylistId,
+        serviceIds: [serviceId],
+        clientName: clientName.trim(),
+        clientPhone: clientPhone.trim(),
+      });
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create the walk-in.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70">
+      <div className="w-[420px] bg-surface-2 rounded-2xl border border-line p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold">Add walk-in</h2>
+          <button onClick={onClose} className="text-muted hover:text-ink">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-[11px] font-medium text-muted block mb-1">Stylist</label>
+            <select
+              value={stylistId}
+              onChange={(e) => setStylistId(e.target.value)}
+              className="w-full bg-surface rounded-lg px-3 py-2 text-sm border border-line focus:outline-none focus:border-accent/40"
+            >
+              <option value="">Select a stylist…</option>
+              {roster.map((r) => (
+                <option key={r.id} value={r.id}>{r.first}{r.onShift ? '' : ' (off shift)'}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-medium text-muted block mb-1">Service</label>
+            <select
+              value={serviceId}
+              onChange={(e) => setServiceId(e.target.value)}
+              className="w-full bg-surface rounded-lg px-3 py-2 text-sm border border-line focus:outline-none focus:border-accent/40"
+            >
+              <option value="">Select a service…</option>
+              {catalog.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} · {c.durationMin}min · {c.price.toFixed(3)} TND</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-medium text-muted block mb-1">Client name</label>
+            <input
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+              placeholder="Walk-in client"
+              className="w-full bg-surface rounded-lg px-3 py-2 text-sm border border-line focus:outline-none focus:border-accent/40"
+            />
+          </div>
+
+          <div>
+            <label className="text-[11px] font-medium text-muted block mb-1">Phone</label>
+            <input
+              value={clientPhone}
+              onChange={(e) => setClientPhone(e.target.value)}
+              placeholder="+216 …"
+              className="w-full bg-surface rounded-lg px-3 py-2 text-sm border border-line focus:outline-none focus:border-accent/40"
+            />
+          </div>
+        </div>
+
+        {error && <p className="text-xs text-error mt-3">{error}</p>}
+
+        <button
+          onClick={submit}
+          disabled={!canSubmit || submitting}
+          className="w-full mt-4 py-2.5 rounded-xl text-sm font-semibold bg-accent text-bg disabled:opacity-40 hover:bg-amber-400 transition-colors"
+        >
+          {submitting ? 'Adding…' : 'Add to Waiting'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
+  const { date, refreshToken, setDate, goToday } = useBoard();
+  const [appts,   setAppts]   = useState<TodayAppt[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [walkinOpen, setWalkinOpen] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<TodayAppt[]>('/pos/today', { date })
+      .then(setAppts)
+      .catch(() => setAppts([]))
+      .finally(() => setLoading(false));
+  }, [date, refreshToken]);
 
   const waiting  = appts.filter((a) => a.column === 'waiting');
   const inChair  = appts.filter((a) => a.column === 'in_chair');
   const done     = appts.filter((a) => a.column === 'done');
 
-  const today = new Date().toLocaleDateString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'long',
-  });
+  const isToday = date === salonDateKey(new Date());
+  const shiftDay = (deltaDays: number) => {
+    const d = new Date(`${date}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + deltaDays);
+    setDate(salonDateKey(d));
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
       <div className="flex items-center justify-between px-6 py-4 shrink-0 border-b border-line">
         <div>
-          <h1 className="text-base font-semibold">Today</h1>
-          <p className="text-xs text-muted mt-0.5">{today}</p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-base font-semibold">{isToday ? 'Today' : formatSalonDayLabel(date)}</h1>
+            <button onClick={() => shiftDay(-1)} className="text-muted hover:text-ink" title="Previous day">
+              <ChevronLeft size={14} />
+            </button>
+            <button onClick={() => shiftDay(1)} className="text-muted hover:text-ink" title="Next day">
+              <ChevronRight size={14} />
+            </button>
+            {!isToday && (
+              <button
+                onClick={goToday}
+                className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+              >
+                Today
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-muted mt-0.5">{formatSalonDayLabel(date)}</p>
         </div>
         <div className="flex gap-2">
-          <button className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface border border-line text-xs font-medium text-muted hover:text-ink hover:border-accent/30 transition-colors">
+          <button
+            onClick={() => setWalkinOpen(true)}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface border border-line text-xs font-medium text-muted hover:text-ink hover:border-accent/30 transition-colors"
+          >
             <Plus size={12} /> Add walk-in
           </button>
           <button className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface border border-line text-xs font-medium text-muted hover:text-ink hover:border-accent/30 transition-colors">
@@ -182,6 +336,17 @@ export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
             accentClass="bg-muted/10 text-muted"
           />
         </div>
+      )}
+
+      {walkinOpen && (
+        <AddWalkinModal
+          onClose={() => setWalkinOpen(false)}
+          onCreated={() => {
+            setWalkinOpen(false);
+            if (!isToday) goToday();
+            useBoard.getState().refresh();
+          }}
+        />
       )}
     </div>
   );

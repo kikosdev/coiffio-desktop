@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X, UserCheck, Banknote, CreditCard } from 'lucide-react';
 import { api } from '../lib/api';
 import { useBoard } from '../stores/useBoard';
 import { salonDateKey, formatSalonDayLabel } from '../lib/time';
@@ -72,9 +72,10 @@ interface ColumnProps {
   cards: TodayAppt[];
   accentClass: string;
   onCheckout?: () => void;
+  onSelect: (id: string) => void;
 }
 
-function KanbanColumn({ title, cards, accentClass, onCheckout }: ColumnProps) {
+function KanbanColumn({ title, cards, accentClass, onCheckout, onSelect }: ColumnProps) {
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-surface-2 rounded-2xl overflow-hidden">
       <div className="flex items-center gap-2 px-4 py-3.5 border-b border-line shrink-0">
@@ -91,7 +92,11 @@ function KanbanColumn({ title, cards, accentClass, onCheckout }: ColumnProps) {
         {cards.map((card) => {
           const paid = fmtPrice(card.price);
           return (
-            <div key={card.id} className="bg-surface rounded-xl p-3.5">
+            <div
+              key={card.id}
+              onClick={() => onSelect(card.id)}
+              className="bg-surface rounded-xl p-3.5 cursor-pointer hover:ring-1 hover:ring-accent/30 transition-shadow"
+            >
               <div className="flex items-start justify-between mb-2.5">
                 <div className="flex-1 min-w-0 pr-2">
                   <div className="flex items-center gap-1.5 mb-0.5">
@@ -126,7 +131,7 @@ function KanbanColumn({ title, cards, accentClass, onCheckout }: ColumnProps) {
 
               {onCheckout && card.column === 'in_chair' && (
                 <button
-                  onClick={onCheckout}
+                  onClick={(e) => { e.stopPropagation(); onCheckout(); }}
                   className="w-full py-1.5 rounded-lg text-xs font-semibold bg-accent text-bg hover:bg-amber-400 transition-colors"
                 >
                   Check out →
@@ -253,17 +258,217 @@ function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated
   );
 }
 
+// ── Appointment detail modal ────────────────────────────────────────────────
+
+interface PosApptDetail {
+  id: string;
+  status: string;
+  source: string;
+  start: string;
+  end: string;
+  price: number;
+  deposit: number | null;
+  checkedInAt: string | null;
+  column: 'waiting' | 'in_chair' | 'done';
+  client: { name: string; phone: string; email: string };
+  stylist: { name: string; color: string };
+  services: { id: string; name: string; price: number; durationMin: number }[];
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  booked: 'Booked',
+  confirmed: 'Confirmed',
+  completed: 'Completed',
+  cancelled: 'Cancelled',
+  noshow: 'No-show',
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  online: 'Online booking',
+  walkin: 'Walk-in',
+  phone: 'Phone booking',
+};
+
+function fmtMoney(n: number) {
+  return `${n.toFixed(3)} TND`;
+}
+
+function AppointmentDetailModal({ apptId, onClose }: { apptId: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<PosApptDetail | null>(null);
+  const [error, setError] = useState('');
+  const [acting, setActing] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  const load = () => {
+    setError('');
+    return api.get<PosApptDetail>(`/pos/appointments/${apptId}`)
+      .then(setDetail)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this appointment.'));
+  };
+
+  useEffect(() => {
+    setDetail(null);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apptId]);
+
+  async function checkIn() {
+    setActing(true);
+    setActionError('');
+    try {
+      await api.post(`/pos/appointments/${apptId}/check-in`);
+      await load();
+      useBoard.getState().refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not check in.');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function pay(method: 'cash' | 'card') {
+    setActing(true);
+    setActionError('');
+    try {
+      await api.post(`/pos/appointments/${apptId}/pay`, { method });
+      await load();
+      useBoard.getState().refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not record payment.');
+    } finally {
+      setActing(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70">
+      <div className="w-[420px] bg-surface-2 rounded-2xl border border-line p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold">Appointment detail</h2>
+          <button onClick={onClose} className="text-muted hover:text-ink">
+            <X size={16} />
+          </button>
+        </div>
+
+        {error && <p className="text-xs text-error">{error}</p>}
+
+        {!detail && !error && (
+          <div className="py-8 text-center text-muted text-sm">Loading…</div>
+        )}
+
+        {detail && (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-semibold">{detail.client.name}</div>
+                {(detail.client.phone || detail.client.email) && (
+                  <div className="text-xs text-muted mt-0.5">
+                    {[detail.client.phone, detail.client.email].filter(Boolean).join(' · ')}
+                  </div>
+                )}
+              </div>
+              <BarberAvatar initials={detail.stylist.name.slice(0, 2).toUpperCase()} color={detail.stylist.color} />
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant={detail.status === 'completed' ? 'green' : 'amber'}>
+                {STATUS_LABEL[detail.status] ?? detail.status}
+              </Badge>
+              {detail.checkedInAt && detail.status !== 'completed' && (
+                <Badge variant="green"><UserCheck size={9} /> In chair</Badge>
+              )}
+              <Badge>{SOURCE_LABEL[detail.source] ?? detail.source}</Badge>
+              <Badge>
+                <Clock size={9} /> {fmtTime(detail.start)}–{fmtTime(detail.end)}
+              </Badge>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-medium text-muted mb-1.5">Stylist</div>
+              <div className="text-sm">{detail.stylist.name}</div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-medium text-muted mb-1.5">Services</div>
+              <div className="space-y-1.5">
+                {detail.services.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between text-sm">
+                    <span>{s.name} <span className="text-muted text-xs">· {s.durationMin}min</span></span>
+                    <span className="font-mono text-xs">{fmtMoney(s.price)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-line pt-3 flex items-center justify-between">
+              <span className="text-sm font-semibold">Total</span>
+              <span className="font-mono text-sm font-semibold">{fmtMoney(detail.price)}</span>
+            </div>
+            {detail.deposit != null && (
+              <div className="flex items-center justify-between text-xs text-muted -mt-2">
+                <span>Deposit paid</span>
+                <span className="font-mono">{fmtMoney(detail.deposit)}</span>
+              </div>
+            )}
+
+            {detail.status === 'completed' ? (
+              <div className="text-center text-xs font-semibold text-success py-1">✓ Paid &amp; completed</div>
+            ) : detail.status === 'cancelled' ? (
+              <div className="text-center text-xs font-semibold text-muted py-1">Cancelled</div>
+            ) : (
+              <div className="border-t border-line pt-3 space-y-2">
+                {!detail.checkedInAt && (
+                  <button
+                    onClick={checkIn}
+                    disabled={acting}
+                    className="w-full py-2 rounded-lg text-xs font-semibold bg-surface border border-line text-ink hover:border-accent/40 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <UserCheck size={13} /> Check in
+                  </button>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => pay('cash')}
+                    disabled={acting}
+                    className="py-2 rounded-lg text-xs font-semibold bg-accent text-bg hover:bg-amber-400 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Banknote size={13} /> Pay cash
+                  </button>
+                  <button
+                    onClick={() => pay('card')}
+                    disabled={acting}
+                    className="py-2 rounded-lg text-xs font-semibold bg-accent text-bg hover:bg-amber-400 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <CreditCard size={13} /> Pay card
+                  </button>
+                </div>
+                {actionError && <p className="text-xs text-error">{actionError}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
   const { date, refreshToken, setDate, goToday } = useBoard();
   const [appts,   setAppts]   = useState<TodayAppt[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
+  const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     api.get<TodayAppt[]>('/pos/today', { date })
-      .then(setAppts)
-      .catch(() => setAppts([]))
+      .then((data) => { setAppts(data); setError(null); })
+      .catch((err) => {
+        setAppts([]);
+        setError(err instanceof Error ? err.message : 'Could not reach the server.');
+      })
       .finally(() => setLoading(false));
   }, [date, refreshToken]);
 
@@ -317,23 +522,37 @@ export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading…</div>
+      ) : error ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center px-6">
+          <span className="text-sm font-semibold text-error">Could not load today's board</span>
+          <span className="text-xs text-muted max-w-sm">{error}</span>
+          <button
+            onClick={() => useBoard.getState().refresh()}
+            className="mt-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-surface border border-line text-muted hover:text-ink hover:border-accent/30 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
       ) : (
         <div className="flex-1 overflow-hidden p-4 flex gap-4">
           <KanbanColumn
             title="Waiting"
             cards={waiting}
             accentClass="bg-accent/10 text-accent"
+            onSelect={setSelectedApptId}
           />
           <KanbanColumn
             title="In Chair"
             cards={inChair}
             accentClass="bg-success/10 text-success"
             onCheckout={onCheckout}
+            onSelect={setSelectedApptId}
           />
           <KanbanColumn
             title="Done"
             cards={done}
             accentClass="bg-muted/10 text-muted"
+            onSelect={setSelectedApptId}
           />
         </div>
       )}
@@ -346,6 +565,13 @@ export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
             if (!isToday) goToday();
             useBoard.getState().refresh();
           }}
+        />
+      )}
+
+      {selectedApptId && (
+        <AppointmentDetailModal
+          apptId={selectedApptId}
+          onClose={() => setSelectedApptId(null)}
         />
       )}
     </div>

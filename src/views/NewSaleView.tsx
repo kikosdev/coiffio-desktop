@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
-import { Search, X, Plus, Minus, CreditCard, Scissors, Wind, Palette, Package, Layers, Loader2 } from 'lucide-react';
-import { api } from '../lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Search, X, Plus, Minus, CreditCard, Scissors, Wind, Palette, Package, Layers,
+  Loader2, Lock, Banknote, Check, ArrowRight, ShoppingCart,
+} from 'lucide-react';
+import { api, ApiError } from '../lib/api';
+import { useCaisse } from '../stores/useCaisse';
 
 interface CatalogItem {
   id: string;
@@ -40,7 +44,17 @@ function uid() {
   return Math.random().toString(36).slice(2);
 }
 
-export function NewSaleView() {
+/** Suggestions de billets : le compte juste, puis les arrondis supérieurs plausibles. */
+function cashSuggestions(total: number): number[] {
+  const out = [total];
+  for (const step of [5, 10, 20, 50]) {
+    const up = Math.ceil(total / step) * step;
+    if (up > total && !out.includes(up)) out.push(up);
+  }
+  return out.slice(0, 5);
+}
+
+export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [config, setConfig] = useState<PosConfig>({ taxRate: 0, currency: 'TND' });
@@ -55,6 +69,15 @@ export function NewSaleView() {
   const [charging, setCharging] = useState(false);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [charged, setCharged] = useState(false);
+  const [cashModal, setCashModal] = useState(false);
+
+  const caisseSession = useCaisse((s) => s.session);
+  const caisseLoading = useCaisse((s) => s.loading);
+  const caisseOpen = caisseSession?.status === 'open';
+
+  useEffect(() => {
+    useCaisse.getState().load();
+  }, []);
 
   useEffect(() => {
     setLoadError(null);
@@ -83,9 +106,15 @@ export function NewSaleView() {
     return matchCat && matchQ;
   });
 
+  /** Quantité déjà au ticket pour ce service, tous barbiers confondus — pilote le badge
+   *  de sélection multiple sur la carte du catalogue. */
+  const qtyInCart = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const l of cart) map.set(l.item.id, (map.get(l.item.id) ?? 0) + l.qty);
+    return map;
+  }, [cart]);
+
   function addItem(item: CatalogItem) {
-    // Plus de `return` silencieux : le catalogue est inerte tant qu'aucun barbier n'est
-    // choisi, et l'écran le dit explicitement (voir le bandeau de sélection ci-dessous).
     if (!activeBarber) return;
     setCharged(false);
     setChargeError(null);
@@ -114,7 +143,7 @@ export function NewSaleView() {
     setChargeError(null);
   }
 
-  async function charge() {
+  async function charge(received?: number) {
     if (cart.length === 0 || charging) return;
     setCharging(true);
     setChargeError(null);
@@ -125,10 +154,16 @@ export function NewSaleView() {
       for (const line of cart) {
         byBarber.set(line.barberId, [...(byBarber.get(line.barberId) ?? []), line]);
       }
+      // `received` n'est transmis QUE si le ticket ne produit qu'un seul encaissement : le
+      // serveur calcule le rendu comme `reçu − montant DE CE paiement`, donc l'envoyer sur un
+      // ticket éclaté entre deux barbiers archiverait un rendu faux. L'opérateur voit quand
+      // même la monnaie à rendre dans la modale, elle n'est simplement pas historisée.
+      const single = byBarber.size === 1;
       for (const [barberId, lines] of byBarber) {
         await api.post('/pos/sale', {
           stylistId: barberId,
           method,
+          ...(single && received !== undefined ? { received } : {}),
           items: lines.map((l) => ({
             kind: 'service' as const,
             refId: l.item.id,
@@ -140,8 +175,14 @@ export function NewSaleView() {
       }
       setCart([]);
       setCharged(true);
+      setCashModal(false);
+      // Le tiroir vient de bouger — le journal de la Caisse doit repartir du serveur.
+      void useCaisse.getState().load();
     } catch (err) {
-      setChargeError(err instanceof Error ? err.message : "L'encaissement a échoué.");
+      const msg = err instanceof ApiError ? err.message : "L'encaissement a échoué.";
+      setChargeError(msg);
+      // Caisse fermée entre-temps (autre poste, clôture) : resynchronise pour afficher l'écran de garde.
+      if (err instanceof ApiError && err.statusCode === 409) void useCaisse.getState().load();
     } finally {
       setCharging(false);
     }
@@ -155,81 +196,99 @@ export function NewSaleView() {
 
   const selectedBarber = barbers.find((b) => b.id === activeBarber) ?? null;
 
+  // ── Garde caisse : aucune vente hors journée de caisse ouverte ──────────────
+  if (!caisseLoading && !caisseOpen) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-error/10 border border-error/30 flex items-center justify-center">
+          <Lock size={22} className="text-error" strokeWidth={1.8} />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold mb-1.5">
+            {caisseSession?.status === 'closed' ? 'Caisse clôturée' : 'Caisse fermée'}
+          </h2>
+          <p className="text-xs text-muted max-w-sm leading-relaxed">
+            {caisseSession?.status === 'closed'
+              ? "La journée de caisse est clôturée : plus aucun encaissement n'est possible aujourd'hui."
+              : "Aucune vente ne peut être encaissée tant que la journée de caisse n'est pas ouverte."}
+          </p>
+        </div>
+        <button
+          onClick={onOpenCaisse}
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent text-bg text-sm font-bold hover:bg-amber-400 active:scale-[0.98] transition-all"
+        >
+          Aller à la caisse <ArrowRight size={14} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
-      {/* LEFT: barbier -> catalogue */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-line">
-        <div className="px-6 pt-5 pb-4 shrink-0">
-          <h1 className="text-base font-semibold mb-4">New Sale</h1>
 
-          {/* ÉTAPE 1 — barbier, AVANT le service */}
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="w-4 h-4 rounded-full bg-accent text-bg text-[10px] font-bold flex items-center justify-center">1</span>
-              <span className="text-xs font-medium">Barbier</span>
-              {selectedBarber && <span className="text-[11px] text-muted">— {selectedBarber.name}</span>}
+      {/* ══ TRANCHE 1 — Barbier ═══════════════════════════════════════════ */}
+      <div className="w-[232px] shrink-0 flex flex-col border-r border-line overflow-hidden">
+        <SliceHeader step={1} title="Barbier" active hint={selectedBarber?.name} />
+
+        <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-1.5">
+          {loading ? (
+            [1, 2, 3, 4].map((i) => <div key={i} className="h-12 bg-surface rounded-xl animate-pulse" />)
+          ) : barbers.length === 0 ? (
+            <div className="text-xs text-error bg-error/10 border border-error/30 rounded-lg px-3 py-2 leading-relaxed">
+              Aucun membre d'équipe actif. Ajoutez un barbier dans Team avant d'encaisser.
             </div>
+          ) : (
+            barbers.map((b) => {
+              const active = b.id === activeBarber;
+              const lines = cart.filter((l) => l.barberId === b.id).reduce((s, l) => s + l.qty, 0);
+              return (
+                <button
+                  key={b.id}
+                  onClick={() => setActiveBarber(b.id)}
+                  className={[
+                    'w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border text-left',
+                    active
+                      ? 'bg-accent/10 text-accent border-accent/40'
+                      : 'text-muted hover:text-ink hover:bg-surface border-line',
+                  ].join(' ')}
+                >
+                  <span
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+                    style={{ backgroundColor: b.color }}
+                  >
+                    {b.initials[0]}
+                  </span>
+                  <span className="flex-1 truncate">{b.name}</span>
+                  {lines > 0 && (
+                    <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-bg text-[10px] font-bold flex items-center justify-center">
+                      {lines}
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
 
-            {loading ? (
-              <div className="flex gap-2">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-9 w-24 bg-surface rounded-lg animate-pulse" />
-                ))}
-              </div>
-            ) : barbers.length === 0 ? (
-              <div className="text-xs text-error bg-error/10 border border-error/30 rounded-lg px-3 py-2">
-                Aucun membre d'équipe actif. Ajoutez un barbier dans Team avant d'encaisser.
-              </div>
-            ) : (
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {barbers.map((b) => {
-                  const active = b.id === activeBarber;
-                  return (
-                    <button
-                      key={b.id}
-                      onClick={() => setActiveBarber(b.id)}
-                      className={[
-                        'flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0 border',
-                        active ? 'bg-accent/10 text-accent border-accent/40' : 'text-muted hover:text-ink hover:bg-surface border-line',
-                      ].join(' ')}
-                    >
-                      <span
-                        className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white"
-                        style={{ backgroundColor: b.color }}
-                      >
-                        {b.initials[0]}
-                      </span>
-                      {b.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+      {/* ══ TRANCHE 2 — Services (verrouillée tant qu'aucun barbier) ══════ */}
+      <div className="flex-1 flex flex-col border-r border-line overflow-hidden relative">
+        <SliceHeader
+          step={2}
+          title="Services"
+          active={!!activeBarber}
+          hint={activeBarber ? (cart.length > 0 ? `${cart.length} ligne${cart.length > 1 ? 's' : ''}` : 'Sélection multiple') : undefined}
+        />
 
-          {/* ÉTAPE 2 — service */}
-          <div className="flex items-center gap-2 mb-2">
-            <span
-              className={[
-                'w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center',
-                activeBarber ? 'bg-accent text-bg' : 'bg-surface text-muted border border-line',
-              ].join(' ')}
-            >
-              2
-            </span>
-            <span className={activeBarber ? 'text-xs font-medium' : 'text-xs font-medium text-muted'}>Service</span>
-            {!activeBarber && !loading && barbers.length > 0 && (
-              <span className="text-[11px] text-muted">— choisissez d'abord un barbier</span>
-            )}
-          </div>
-
-          <div className="relative mb-3">
+        <div className="px-5 pb-3 shrink-0 space-y-3">
+          <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search services or products…"
-              className="w-full bg-surface border border-line rounded-xl pl-9 pr-4 py-2.5 text-sm text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors"
+              disabled={!activeBarber}
+              placeholder="Rechercher un service ou produit…"
+              className="w-full bg-surface border border-line rounded-xl pl-9 pr-4 py-2.5 text-sm text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors disabled:opacity-50"
             />
           </div>
 
@@ -240,67 +299,79 @@ export function NewSaleView() {
                 <button
                   key={cat}
                   onClick={() => setActiveCategory(cat)}
+                  disabled={!activeBarber}
                   className={[
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all shrink-0 disabled:opacity-50',
                     activeCategory === cat
                       ? 'bg-accent/10 text-accent border border-accent/30'
                       : 'text-muted hover:text-ink hover:bg-surface border border-transparent',
                   ].join(' ')}
                 >
                   <Icon size={12} />
-                  {cat === 'all' ? 'All' : cat}
+                  {cat === 'all' ? 'Tous' : cat}
                 </button>
               );
             })}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 pb-6">
+        <div className="flex-1 overflow-y-auto px-5 pb-6">
           {loading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-              {[1, 2, 3, 4, 5, 6].map((i) => (
-                <div key={i} className="bg-surface rounded-card p-4 h-24 animate-pulse" />
-              ))}
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="bg-surface rounded-card p-4 h-24 animate-pulse" />)}
             </div>
           ) : loadError ? (
             <div className="flex items-center justify-center h-40 text-error text-sm">{loadError}</div>
           ) : visible.length === 0 ? (
             <div className="flex items-center justify-center h-40 text-muted text-sm">
-              {search ? `No results for "${search}"` : 'No services in catalog yet.'}
+              {search ? `Aucun résultat pour « ${search} »` : 'Aucun service au catalogue.'}
             </div>
           ) : (
-            <div className={['grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3', activeBarber ? '' : 'opacity-40'].join(' ')}>
-              {visible.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => addItem(item)}
-                  disabled={!activeBarber}
-                  title={activeBarber ? undefined : "Choisissez d'abord un barbier"}
-                  className="bg-surface rounded-card p-4 text-left hover:border-accent/40 border border-line transition-all duration-150 group active:scale-[0.98] disabled:cursor-not-allowed disabled:hover:border-line disabled:active:scale-100"
-                >
-                  {item.durationMin && <span className="text-[10px] text-muted mb-1.5 block">{item.durationMin} min</span>}
-                  <span className="block text-sm font-medium leading-snug mb-3 group-hover:text-ink">{item.name}</span>
-                  <span className="font-mono text-sm font-semibold text-accent">{money(item.price)}</span>
-                </button>
-              ))}
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {visible.map((item) => {
+                const qty = qtyInCart.get(item.id) ?? 0;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => addItem(item)}
+                    disabled={!activeBarber}
+                    className={[
+                      'relative bg-surface rounded-card p-4 text-left border transition-all duration-150 group active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100',
+                      qty > 0 ? 'border-accent/50' : 'border-line hover:border-accent/40',
+                    ].join(' ')}
+                  >
+                    {qty > 0 && (
+                      <span className="absolute top-2 right-2 min-w-[20px] h-5 px-1.5 rounded-full bg-accent text-bg text-[10px] font-bold flex items-center justify-center">
+                        ×{qty}
+                      </span>
+                    )}
+                    {item.durationMin && <span className="text-[10px] text-muted mb-1.5 block">{item.durationMin} min</span>}
+                    <span className="block text-sm font-medium leading-snug mb-3 pr-6">{item.name}</span>
+                    <span className="font-mono text-sm font-semibold text-accent">{money(item.price)}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
+
+        {!activeBarber && !loading && (
+          <SliceLock label="Choisissez d'abord un barbier" />
+        )}
       </div>
 
-      {/* RIGHT: Current Ticket */}
-      <div className="w-[320px] shrink-0 flex flex-col bg-surface-2 overflow-hidden">
-        <div className="px-5 pt-5 pb-4 shrink-0 border-b border-line">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold">Current Ticket</h2>
-            {cart.length > 0 && (
-              <button onClick={clearCart} className="text-[11px] text-muted hover:text-error transition-colors">
-                Clear
-              </button>
-            )}
-          </div>
+      {/* ══ TRANCHE 3 — Ticket (verrouillée tant qu'aucun service) ════════ */}
+      <div className="w-[336px] shrink-0 flex flex-col bg-surface-2 overflow-hidden relative">
+        <SliceHeader step={3} title="Ticket" active={cart.length > 0}>
+          {cart.length > 0 && (
+            <button onClick={clearCart} className="text-[11px] text-muted hover:text-error transition-colors">
+              Vider
+            </button>
+          )}
+        </SliceHeader>
 
-          <div className="flex bg-surface rounded-lg p-0.5 mb-4">
+        <div className="px-5 pb-4 shrink-0 space-y-2">
+          <div className="flex bg-surface rounded-lg p-0.5">
             {(['walkin', 'booked'] as const).map((m) => (
               <button
                 key={m}
@@ -310,7 +381,7 @@ export function NewSaleView() {
                   mode === m ? 'bg-accent text-bg' : 'text-muted hover:text-ink',
                 ].join(' ')}
               >
-                {m === 'walkin' ? 'Walk-in' : 'Booked'}
+                {m === 'walkin' ? 'Sans RDV' : 'Sur RDV'}
               </button>
             ))}
           </div>
@@ -321,21 +392,24 @@ export function NewSaleView() {
                 key={m}
                 onClick={() => setMethod(m)}
                 className={[
-                  'flex-1 py-1.5 text-xs font-medium rounded-md transition-all capitalize',
+                  'flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1.5',
                   method === m ? 'bg-accent text-bg' : 'text-muted hover:text-ink',
                 ].join(' ')}
               >
+                {m === 'cash' ? <Banknote size={12} /> : <CreditCard size={12} />}
                 {m === 'cash' ? 'Espèces' : 'Carte'}
               </button>
             ))}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-3">
+        <div className="flex-1 overflow-y-auto px-5 py-1">
           {cart.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-muted">
-              <ShoppingCartIcon />
-              <span className="text-xs">{activeBarber ? 'Tap a service to add it' : "Choisissez un barbier puis un service"}</span>
+              <ShoppingCart size={30} strokeWidth={1.5} />
+              <span className="text-xs text-center px-4">
+                {activeBarber ? 'Ajoutez un ou plusieurs services' : 'Choisissez un barbier puis un service'}
+              </span>
             </div>
           ) : (
             <div className="space-y-2">
@@ -360,9 +434,7 @@ export function NewSaleView() {
                           style={{ background: `${barber.color}1A` }}
                         >
                           {barbers.map((b) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name}
-                            </option>
+                            <option key={b.id} value={b.id}>{b.name}</option>
                           ))}
                         </select>
                         <span
@@ -404,11 +476,11 @@ export function NewSaleView() {
         <div className="px-5 pt-3 pb-5 shrink-0 border-t border-line">
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-xs text-muted">
-              <span>Subtotal</span>
+              <span>Sous-total</span>
               <span className="font-mono">{money(subtotal)}</span>
             </div>
             <div className="flex justify-between text-xs text-muted">
-              <span>Tax ({config.taxRate}%)</span>
+              <span>TVA ({config.taxRate}%)</span>
               <span className="font-mono">{money(tax)}</span>
             </div>
             <div className="flex justify-between text-sm font-semibold border-t border-line pt-2 mt-2">
@@ -422,12 +494,12 @@ export function NewSaleView() {
           )}
 
           {charged ? (
-            <div className="w-full py-3 rounded-xl bg-success/20 border border-success/40 text-success text-sm font-semibold text-center">
-              ✓ Payment recorded
+            <div className="w-full py-3 rounded-xl bg-success/20 border border-success/40 text-success text-sm font-semibold text-center flex items-center justify-center gap-2">
+              <Check size={15} /> Encaissement enregistré
             </div>
           ) : (
             <button
-              onClick={charge}
+              onClick={() => (method === 'cash' ? setCashModal(true) : charge())}
               disabled={cart.length === 0 || charging}
               className={[
                 'w-full py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all',
@@ -436,22 +508,156 @@ export function NewSaleView() {
                   : 'bg-surface text-muted cursor-not-allowed',
               ].join(' ')}
             >
-              {charging ? <Loader2 size={15} className="animate-spin" /> : <CreditCard size={15} />}
-              {charging ? 'Encaissement…' : `Charge ${cart.length > 0 ? money(total) : ''}`}
+              {charging ? <Loader2 size={15} className="animate-spin" /> : method === 'cash' ? <Banknote size={15} /> : <CreditCard size={15} />}
+              {charging ? 'Encaissement…' : `Encaisser ${cart.length > 0 ? money(total) : ''}`}
             </button>
           )}
         </div>
+
+        {cart.length === 0 && <SliceLock label="Ajoutez un service au ticket" subtle />}
       </div>
+
+      {cashModal && (
+        <CashModal
+          total={total}
+          currency={config.currency}
+          busy={charging}
+          error={chargeError}
+          onConfirm={(received) => charge(received)}
+          onClose={() => setCashModal(false)}
+        />
+      )}
     </div>
   );
 }
 
-function ShoppingCartIcon() {
+// ─── Chrome des tranches ────────────────────────────────────────────────────
+
+function SliceHeader({ step, title, active, hint, children }: {
+  step: number; title: string; active: boolean; hint?: string; children?: React.ReactNode;
+}) {
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="9" cy="21" r="1" />
-      <circle cx="20" cy="21" r="1" />
-      <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
-    </svg>
+    <div className="flex items-center gap-2 px-5 pt-5 pb-4 shrink-0">
+      <span className={[
+        'w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0',
+        active ? 'bg-accent text-bg' : 'bg-surface text-muted border border-line',
+      ].join(' ')}>
+        {step}
+      </span>
+      <h2 className={`text-sm font-semibold ${active ? '' : 'text-muted'}`}>{title}</h2>
+      {hint && <span className="text-[11px] text-muted truncate">— {hint}</span>}
+      <div className="flex-1" />
+      {children}
+    </div>
+  );
+}
+
+/** Voile de verrouillage : la tranche reste lisible (l'opérateur voit ce qui l'attend)
+ *  mais rien n'y est cliquable tant que l'étape précédente n'est pas faite. */
+function SliceLock({ label, subtle }: { label: string; subtle?: boolean }) {
+  return (
+    <div className={`absolute inset-0 flex items-end justify-center pb-8 pointer-events-none ${subtle ? 'bg-bg/20' : 'bg-bg/40'}`}>
+      <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface border border-line text-[11px] text-muted">
+        <Lock size={10} /> {label}
+      </span>
+    </div>
+  );
+}
+
+// ─── Modale espèces (rendu de monnaie) ──────────────────────────────────────
+
+function CashModal({ total, currency, busy, error, onConfirm, onClose }: {
+  total: number;
+  currency: string;
+  busy: boolean;
+  error: string | null;
+  onConfirm: (received: number) => void;
+  onClose: () => void;
+}) {
+  const [raw, setRaw] = useState('');
+  const received = Number(raw);
+  const valid = raw !== '' && Number.isFinite(received) && received >= total;
+  const change = valid ? received - total : 0;
+  const fmt = (n: number) => n.toFixed(3).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const suggestions = useMemo(() => cashSuggestions(total), [total]);
+
+  function submit() {
+    if (!valid || busy) return;
+    onConfirm(received);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60" onClick={busy ? undefined : onClose} />
+      <div className="relative w-[400px] bg-surface-2 border border-line rounded-2xl p-6 shadow-lg">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Banknote size={15} className="text-accent" /> Paiement espèces
+          </h3>
+          <button onClick={onClose} disabled={busy} className="text-muted hover:text-ink transition-colors disabled:opacity-40">
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="flex justify-between items-baseline mb-5 pb-4 border-b border-line">
+          <span className="text-xs text-muted">Total à payer</span>
+          <span className="font-mono text-xl font-bold text-accent">{fmt(total)} <span className="text-xs font-normal text-muted">{currency}</span></span>
+        </div>
+
+        <label className="text-[11px] font-semibold text-muted block mb-1.5">Reçu du client</label>
+        <input
+          autoFocus
+          type="number"
+          min="0"
+          step="0.001"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          placeholder="0.000"
+          className="w-full bg-surface border border-line rounded-xl px-3 py-3 text-lg font-mono text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors mb-3"
+        />
+
+        <div className="flex flex-wrap gap-1.5 mb-5">
+          {suggestions.map((s, i) => (
+            <button
+              key={s}
+              onClick={() => setRaw(String(s))}
+              className="px-3 py-1.5 rounded-lg bg-surface border border-line text-xs font-mono font-medium text-muted hover:text-ink hover:border-accent/40 transition-colors"
+            >
+              {i === 0 ? 'Compte juste' : fmt(s)}
+            </button>
+          ))}
+        </div>
+
+        <div className={[
+          'flex justify-between items-baseline rounded-xl px-4 py-3.5 mb-5 border',
+          valid && change > 0 ? 'bg-accent/10 border-accent/40' : 'bg-surface border-line',
+        ].join(' ')}>
+          <span className="text-xs font-semibold">À rendre au client</span>
+          <span className={`font-mono text-xl font-bold ${valid && change > 0 ? 'text-accent' : 'text-muted'}`}>
+            {fmt(change)} <span className="text-xs font-normal text-muted">{currency}</span>
+          </span>
+        </div>
+
+        {raw !== '' && !valid && (
+          <p className="text-[11px] text-error mb-4">Le montant reçu doit couvrir le total.</p>
+        )}
+        {error && (
+          <div className="mb-4 text-[11px] text-error bg-error/10 border border-error/30 rounded-lg px-3 py-2">{error}</div>
+        )}
+
+        <button
+          onClick={submit}
+          disabled={!valid || busy}
+          className={[
+            'w-full py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all',
+            valid && !busy ? 'bg-accent text-bg hover:bg-amber-400 active:scale-[0.98]' : 'bg-surface text-muted cursor-not-allowed',
+          ].join(' ')}
+        >
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          {busy ? 'Encaissement…' : 'Valider l\'encaissement'}
+        </button>
+      </div>
+    </div>
   );
 }

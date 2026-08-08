@@ -164,8 +164,8 @@ export function FrontDeskShell() {
             <span className="text-xs font-medium text-ink">{toast}</span>
           </div>
         )}
-        {view === 'sale'    && <NewSaleView />}
-        {view === 'today'   && <TodayBoardView onCheckout={() => setView('sale')} />}
+        {view === 'sale'    && <NewSaleView onOpenCaisse={() => setView('caisse')} />}
+        {view === 'today'   && <TodayBoardView onCheckout={() => setView('sale')} onOpenCaisse={() => setView('caisse')} />}
         {view === 'caisse'  && <CaisseView />}
         {view === 'team'    && <TeamView />}
         {view === 'reports' && <ReportsView />}

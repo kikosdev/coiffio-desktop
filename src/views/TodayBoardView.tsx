@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X, UserCheck, Banknote, CreditCard } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { useBoard } from '../stores/useBoard';
 import { salonDateKey, formatSalonDayLabel } from '../lib/time';
 import { isOnShift, type WeekSlot } from '../lib/shift';
@@ -38,6 +38,7 @@ interface CatalogItem {
 
 interface TodayBoardViewProps {
   onCheckout: () => void;
+  onOpenCaisse: () => void;
 }
 
 function BarberAvatar({ initials, color }: { initials: string; color: string }) {
@@ -299,11 +300,16 @@ function fmtMoney(n: number) {
   return `${n.toFixed(3)} TND`;
 }
 
-function AppointmentDetailModal({ apptId, onClose }: { apptId: string; onClose: () => void }) {
+function AppointmentDetailModal({ apptId, onClose, onOpenCaisse }: {
+  apptId: string; onClose: () => void; onOpenCaisse: () => void;
+}) {
   const [detail, setDetail] = useState<PosApptDetail | null>(null);
   const [error, setError] = useState('');
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState('');
+  /** Le back refuse l'encaissement hors journée de caisse ouverte — on renvoie l'opérateur
+   *  vers l'écran Caisse au lieu de le laisser devant un message d'erreur sans issue. */
+  const [caisseBlocked, setCaisseBlocked] = useState(false);
 
   const load = () => {
     setError('');
@@ -335,11 +341,14 @@ function AppointmentDetailModal({ apptId, onClose }: { apptId: string; onClose: 
   async function pay(method: 'cash' | 'card') {
     setActing(true);
     setActionError('');
+    setCaisseBlocked(false);
     try {
       await api.post(`/pos/appointments/${apptId}/pay`, { method });
       await load();
       useBoard.getState().refresh();
     } catch (err) {
+      const code = err instanceof ApiError ? err.details?.code : undefined;
+      if (code === 'CAISSE_NOT_OPEN' || code === 'CAISSE_CLOSED') setCaisseBlocked(true);
       setActionError(err instanceof Error ? err.message : 'Could not record payment.');
     } finally {
       setActing(false);
@@ -449,6 +458,14 @@ function AppointmentDetailModal({ apptId, onClose }: { apptId: string; onClose: 
                   </button>
                 </div>
                 {actionError && <p className="text-xs text-error">{actionError}</p>}
+                {caisseBlocked && (
+                  <button
+                    onClick={onOpenCaisse}
+                    className="w-full py-2 rounded-lg text-xs font-semibold bg-surface border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+                  >
+                    Aller à la caisse
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -458,7 +475,7 @@ function AppointmentDetailModal({ apptId, onClose }: { apptId: string; onClose: 
   );
 }
 
-export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
+export function TodayBoardView({ onCheckout, onOpenCaisse }: TodayBoardViewProps) {
   const { date, refreshToken, setDate, goToday } = useBoard();
   const [appts,   setAppts]   = useState<TodayAppt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -520,7 +537,10 @@ export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
           >
             <Plus size={12} /> Add walk-in
           </button>
-          <button className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface border border-line text-xs font-medium text-muted hover:text-ink hover:border-accent/30 transition-colors">
+          <button
+            onClick={onOpenCaisse}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-surface border border-line text-xs font-medium text-muted hover:text-ink hover:border-accent/30 transition-colors"
+          >
             <DollarSign size={12} /> Open register
           </button>
         </div>
@@ -578,6 +598,7 @@ export function TodayBoardView({ onCheckout }: TodayBoardViewProps) {
         <AppointmentDetailModal
           apptId={selectedApptId}
           onClose={() => setSelectedApptId(null)}
+          onOpenCaisse={onOpenCaisse}
         />
       )}
     </div>

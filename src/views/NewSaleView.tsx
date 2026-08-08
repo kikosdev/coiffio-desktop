@@ -370,7 +370,7 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
           )}
         </SliceHeader>
 
-        <div className="px-5 pb-4 shrink-0 space-y-2">
+        <div className="px-5 pb-4 shrink-0">
           <div className="flex bg-surface rounded-lg p-0.5">
             {(['walkin', 'booked'] as const).map((m) => (
               <button
@@ -382,22 +382,6 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
                 ].join(' ')}
               >
                 {m === 'walkin' ? 'Sans RDV' : 'Sur RDV'}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex bg-surface rounded-lg p-0.5">
-            {(['cash', 'card'] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMethod(m)}
-                className={[
-                  'flex-1 py-1.5 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1.5',
-                  method === m ? 'bg-accent text-bg' : 'text-muted hover:text-ink',
-                ].join(' ')}
-              >
-                {m === 'cash' ? <Banknote size={12} /> : <CreditCard size={12} />}
-                {m === 'cash' ? 'Espèces' : 'Carte'}
               </button>
             ))}
           </div>
@@ -474,6 +458,16 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
         </div>
 
         <div className="px-5 pt-3 pb-5 shrink-0 border-t border-line">
+          {/* Le verrou de la tranche 3 vit DANS le pied, pas en surimpression : posé en
+              overlay il recouvrait le sélecteur de paiement et le bouton d'encaissement. */}
+          {cart.length === 0 && (
+            <div className="flex justify-center mb-3">
+              <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface border border-line text-[11px] text-muted">
+                <Lock size={10} /> Ajoutez un service au ticket
+              </span>
+            </div>
+          )}
+
           <div className="space-y-1.5 mb-4">
             <div className="flex justify-between text-xs text-muted">
               <span>Sous-total</span>
@@ -487,6 +481,24 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
               <span>Total</span>
               <span className="font-mono text-accent">{money(total)}</span>
             </div>
+          </div>
+
+          {/* Moyen de paiement au plus près du geste d'encaissement — c'est la dernière
+              décision prise avant d'appuyer, pas un réglage d'en-tête. */}
+          <div className="flex bg-surface rounded-lg p-0.5 mb-3">
+            {(['cash', 'card'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMethod(m)}
+                className={[
+                  'flex-1 py-2 text-xs font-medium rounded-md transition-all flex items-center justify-center gap-1.5',
+                  method === m ? 'bg-accent text-bg' : 'text-muted hover:text-ink',
+                ].join(' ')}
+              >
+                {m === 'cash' ? <Banknote size={12} /> : <CreditCard size={12} />}
+                {m === 'cash' ? 'Espèces' : 'Carte'}
+              </button>
+            ))}
           </div>
 
           {chargeError && (
@@ -514,7 +526,6 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
           )}
         </div>
 
-        {cart.length === 0 && <SliceLock label="Ajoutez un service au ticket" subtle />}
       </div>
 
       {cashModal && (
@@ -554,9 +565,9 @@ function SliceHeader({ step, title, active, hint, children }: {
 
 /** Voile de verrouillage : la tranche reste lisible (l'opérateur voit ce qui l'attend)
  *  mais rien n'y est cliquable tant que l'étape précédente n'est pas faite. */
-function SliceLock({ label, subtle }: { label: string; subtle?: boolean }) {
+function SliceLock({ label }: { label: string }) {
   return (
-    <div className={`absolute inset-0 flex items-end justify-center pb-8 pointer-events-none ${subtle ? 'bg-bg/20' : 'bg-bg/40'}`}>
+    <div className="absolute inset-0 flex items-end justify-center pb-8 pointer-events-none bg-bg/40">
       <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface border border-line text-[11px] text-muted">
         <Lock size={10} /> {label}
       </span>

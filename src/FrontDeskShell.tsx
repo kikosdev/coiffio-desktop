@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShoppingCart, CalendarDays, Users2, BarChart3, Lock, Bell, Calendar } from 'lucide-react';
+import { ShoppingCart, CalendarDays, Users2, BarChart3, Wallet, Lock, Bell, Calendar } from 'lucide-react';
 import { NewSaleView } from './views/NewSaleView';
 import { TodayBoardView } from './views/TodayBoardView';
 import { TeamView } from './views/TeamView';
 import { ReportsView } from './views/ReportsView';
+import { CaisseView } from './views/CaisseView';
 import { formatSalonTime, salonDateKey } from './lib/time';
 import { storage } from './lib/storage';
 import { connectPosSocket, disconnectPosSocket } from './lib/socket';
@@ -12,13 +13,14 @@ import { useBoard } from './stores/useBoard';
 import { useNotifStore } from './stores/useNotifStore';
 import { NotificationBell } from './components/NotificationBell';
 
-export type View = 'sale' | 'today' | 'team' | 'reports';
+export type View = 'sale' | 'today' | 'caisse' | 'team' | 'reports';
 
 const NAV = [
-  { id: 'sale'    as const, label: 'New Sale', short: 'Sale',    Icon: ShoppingCart },
-  { id: 'today'   as const, label: 'Today',    short: 'Today',   Icon: CalendarDays },
-  { id: 'team'    as const, label: 'Team',     short: 'Team',    Icon: Users2 },
-  { id: 'reports' as const, label: 'Reports',  short: 'Reports', Icon: BarChart3 },
+  { id: 'sale'    as const, label: 'New Sale',      short: 'Sale',    Icon: ShoppingCart },
+  { id: 'today'   as const, label: 'Today',         short: 'Today',   Icon: CalendarDays },
+  { id: 'caisse'  as const, label: 'Caisse',        short: 'Caisse',  Icon: Wallet },
+  { id: 'team'    as const, label: 'Team',          short: 'Team',    Icon: Users2 },
+  { id: 'reports' as const, label: 'Reports',       short: 'Reports', Icon: BarChart3 },
 ];
 
 export function FrontDeskShell() {
@@ -164,6 +166,7 @@ export function FrontDeskShell() {
         )}
         {view === 'sale'    && <NewSaleView />}
         {view === 'today'   && <TodayBoardView onCheckout={() => setView('sale')} />}
+        {view === 'caisse'  && <CaisseView />}
         {view === 'team'    && <TeamView />}
         {view === 'reports' && <ReportsView />}
       </main>

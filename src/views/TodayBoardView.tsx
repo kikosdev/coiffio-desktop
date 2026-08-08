@@ -3,6 +3,7 @@ import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X, 
 import { api } from '../lib/api';
 import { useBoard } from '../stores/useBoard';
 import { salonDateKey, formatSalonDayLabel } from '../lib/time';
+import { isOnShift, type WeekSlot } from '../lib/shift';
 
 interface TodayAppt {
   id: string;
@@ -18,11 +19,14 @@ interface TodayAppt {
   column: 'waiting' | 'in_chair' | 'done';
 }
 
-interface RosterCard {
+/** Forme de GET /pos/team — tout staff actif, sans filtre PIN/posEnabled. Le picker de
+ *  walk-in a besoin de « qui peut prendre un client », pas de « qui peut ouvrir le
+ *  terminal » : /pos/roster (posEnabled: true) est réservé à la connexion par PIN. */
+interface TeamCard {
   id: string;
   first: string;
   color: string;
-  onShift: boolean;
+  week: WeekSlot[];
 }
 
 interface CatalogItem {
@@ -148,7 +152,7 @@ function KanbanColumn({ title, cards, accentClass, onCheckout, onSelect }: Colum
 // ── Add walk-in modal ───────────────────────────────────────────────────────
 
 function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
-  const [roster, setRoster] = useState<RosterCard[]>([]);
+  const [roster, setRoster] = useState<TeamCard[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [stylistId, setStylistId] = useState('');
   const [serviceId, setServiceId] = useState('');
@@ -158,9 +162,9 @@ function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Promise.all([api.get<RosterCard[]>('/pos/roster'), api.get<CatalogItem[]>('/pos/catalog')])
+    Promise.all([api.get<TeamCard[]>('/pos/team'), api.get<CatalogItem[]>('/pos/catalog')])
       .then(([r, c]) => { setRoster(r); setCatalog(c); })
-      .catch(() => {});
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not load stylists and services.'));
   }, []);
 
   const canSubmit = !!stylistId && !!serviceId && clientName.trim() !== '' && clientPhone.trim() !== '';
@@ -204,7 +208,9 @@ function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated
             >
               <option value="">Select a stylist…</option>
               {roster.map((r) => (
-                <option key={r.id} value={r.id}>{r.first}{r.onShift ? '' : ' (off shift)'}</option>
+                <option key={r.id} value={r.id}>
+                  {r.first}{isOnShift({ isActive: true, week: r.week }) ? '' : ' (off shift)'}
+                </option>
               ))}
             </select>
           </div>

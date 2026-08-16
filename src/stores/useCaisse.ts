@@ -18,6 +18,11 @@ export interface CaisseEntry {
   affectsDrawer: boolean;
   staffName: string;
   note?: string;
+  /** LC-9 (Prompt 7) — distingue un `Payment` (FinanceService) d'une `Sale` orpheline
+   *  (SalesService, retail sans RDV) : le même `kind:'sale'` couvre les deux. */
+  entryType?: 'payment' | 'sale';
+  /** Présent uniquement si `entryType:'payment'` ET lié à un RDV — ouvre le modal d'investigation. */
+  appointmentId?: string;
 }
 
 export interface CashSession {

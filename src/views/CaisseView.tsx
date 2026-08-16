@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Wallet, Lock, LockOpen, ArrowDownLeft, ArrowUpRight, Plus, Loader2,
   AlertTriangle, CheckCircle2, History, X, CreditCard, Banknote, RotateCcw,
+  Droplet, User, Clock, ChevronRight, ShieldCheck,
 } from 'lucide-react';
 import {
   useCaisse, MOVEMENT_REASONS,
   type CaisseEntry, type CashSession, type CashMovementReason, type CashMovementType,
 } from '../stores/useCaisse';
 import { formatSalonTime, formatSalonDayLabel } from '../lib/time';
+import { api } from '../lib/api';
 
 const REASON_LABEL: Record<CashMovementReason, string> = {
   apport: 'Apport de monnaie',
@@ -35,6 +37,8 @@ export function CaisseView() {
   const { day, session, totals, entries, canClose, loading, busy, error, history } = useCaisse();
   const [modal, setModal] = useState<null | 'open' | 'movement' | 'close'>(null);
   const [showHistory, setShowHistory] = useState(false);
+  // LC-9 (Prompt 7) : appointmentId d'une ligne de Caisse cliquée — ouvre le modal d'investigation.
+  const [investigateApptId, setInvestigateApptId] = useState<string | null>(null);
 
   useEffect(() => {
     useCaisse.getState().load();
@@ -170,7 +174,7 @@ export function CaisseView() {
           {showHistory ? (
             <HistoryPanel history={history} />
           ) : (
-            <JournalPanel entries={entries} loading={loading} />
+            <JournalPanel entries={entries} loading={loading} onInvestigate={setInvestigateApptId} />
           )}
         </div>
       </div>
@@ -179,6 +183,9 @@ export function CaisseView() {
       {modal === 'movement' && <MovementModal busy={busy} onClose={() => setModal(null)} />}
       {modal === 'close' && (
         <CloseModal busy={busy} expected={totals.expectedCash} onClose={() => setModal(null)} />
+      )}
+      {investigateApptId && (
+        <InvestigationModal appointmentId={investigateApptId} onClose={() => setInvestigateApptId(null)} />
       )}
     </div>
   );
@@ -251,7 +258,9 @@ function ClosedSummary({ counted, expected, variance, closedAt, note }: {
   );
 }
 
-function JournalPanel({ entries, loading }: { entries: CaisseEntry[]; loading: boolean }) {
+function JournalPanel({ entries, loading, onInvestigate }: {
+  entries: CaisseEntry[]; loading: boolean; onInvestigate: (appointmentId: string) => void;
+}) {
   if (loading) {
     return (
       <div className="p-6 space-y-2">
@@ -277,12 +286,17 @@ function JournalPanel({ entries, loading }: { entries: CaisseEntry[]; loading: b
         {entries.map((e) => {
           const Icon = e.kind === 'movement' && e.amount > 0 ? ArrowDownLeft : KIND_ICON[e.kind];
           const isCard = e.method === 'card';
+          // LC-9 (Prompt 7) : investigable UNIQUEMENT si adossée à un Payment lié à un RDV —
+          // une Sale orpheline (retail sans RDV) ou un mouvement de caisse n'ont rien à montrer.
+          const investigable = e.entryType === 'payment' && !!e.appointmentId;
           return (
             <div
               key={e.id}
+              onClick={investigable ? () => onInvestigate(e.appointmentId!) : undefined}
               className={[
                 'flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors',
                 e.affectsDrawer ? 'bg-surface border-line' : 'bg-surface/40 border-transparent',
+                investigable ? 'cursor-pointer hover:border-accent/40' : '',
               ].join(' ')}
             >
               <span className="font-mono text-[11px] text-muted w-11 shrink-0 tabular-nums">
@@ -313,6 +327,7 @@ function JournalPanel({ entries, loading }: { entries: CaisseEntry[]; loading: b
               ].join(' ')}>
                 {e.amount > 0 && e.kind !== 'closing' ? '+' : ''}{money(e.amount)}
               </span>
+              {investigable && <ChevronRight size={13} className="text-muted shrink-0" />}
             </div>
           );
         })}
@@ -364,6 +379,194 @@ function HistoryPanel({ history }: { history: CashSession[] }) {
 }
 
 // ─── Modales ────────────────────────────────────────────────────────────────
+
+// LC-9 (SKILL_loss_control_doses.md, Prompt 7) — forme de
+// GET /loss-control/appointments/:id/investigation.
+interface InvestigationData {
+  appointment: {
+    id: string;
+    status: string;
+    source: string;
+    start: string;
+    client: { name: string; phone: string };
+    stylist: { id: string; name: string };
+    services: { id: string; name: string; price: number; durationMin: number }[];
+  };
+  doses: {
+    productId: string;
+    productName: string;
+    dosesDeclared: number;
+    dosesExpected: number;
+    variancePct: number;
+    lockedAt: string | null;
+    correctedBy?: string;
+    correctionNote?: string;
+  }[];
+  payment: { id: string; amount: number; method: string; commission: number; productCommission: number } | null;
+}
+
+const INVESTIGATION_STATUS_LABEL: Record<string, string> = {
+  booked: 'Booked', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', noshow: 'No-show',
+};
+const INVESTIGATION_SOURCE_LABEL: Record<string, string> = {
+  online: 'Online booking', walkin: 'Walk-in', phone: 'Phone booking',
+};
+
+function fmtInvestigationTime(iso: string) {
+  return new Date(iso).toLocaleTimeString('fr-TN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+/**
+ * LC-9 — modal d'investigation RDV + doses. Réutilise le pattern d'`AppointmentDetailModal`
+ * (TodayBoardView.tsx) : fetch-on-open par id, états loading/error, w-[420px], bg-surface-2/
+ * border-line/rounded-2xl — le POS n'a pas de composant modal partagé, donc pattern suivi,
+ * pas importé. Ouvert depuis une ligne de Caisse (`entryType:'payment'` + `appointmentId`) ;
+ * prêt à être ouvert aussi depuis une alerte `extreme_usage` (même `appointmentId`) le jour où
+ * une surface alertes existe côté desktop — pas construite ici, hors périmètre de ce prompt.
+ */
+function InvestigationModal({ appointmentId, onClose }: { appointmentId: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<InvestigationData | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setDetail(null);
+    setError('');
+    api.get<InvestigationData>(`/loss-control/appointments/${appointmentId}/investigation`)
+      .then(setDetail)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this appointment.'));
+  }, [appointmentId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70">
+      <div className="w-[420px] max-h-[85vh] overflow-y-auto bg-surface-2 rounded-2xl border border-line p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5">
+            <Droplet size={14} className="text-accent" /> Investigation RDV
+          </h2>
+          <button onClick={onClose} className="text-muted hover:text-ink">
+            <X size={16} />
+          </button>
+        </div>
+
+        {error && <p className="text-xs text-error">{error}</p>}
+
+        {!detail && !error && (
+          <div className="py-8 text-center text-muted text-sm">Loading…</div>
+        )}
+
+        {detail && (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-semibold flex items-center gap-1.5">
+                  <User size={12} className="text-muted" /> {detail.appointment.client.name}
+                </div>
+                {detail.appointment.client.phone && (
+                  <div className="text-xs text-muted mt-0.5">{detail.appointment.client.phone}</div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border border-line text-muted">
+                {INVESTIGATION_STATUS_LABEL[detail.appointment.status] ?? detail.appointment.status}
+              </span>
+              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border border-line text-muted">
+                {INVESTIGATION_SOURCE_LABEL[detail.appointment.source] ?? detail.appointment.source}
+              </span>
+              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border border-line text-muted">
+                <Clock size={9} /> {fmtInvestigationTime(detail.appointment.start)}
+              </span>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-medium text-muted mb-1.5">Stylist</div>
+              <div className="text-sm">{detail.appointment.stylist.name}</div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-medium text-muted mb-1.5">Services</div>
+              <div className="space-y-1.5">
+                {detail.appointment.services.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between text-sm">
+                    <span>{s.name} <span className="text-muted text-xs">· {s.durationMin}min</span></span>
+                    <span className="font-mono text-xs">{money(s.price)} TND</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-line pt-3">
+              <div className="text-[11px] font-medium text-muted mb-2 flex items-center gap-1.5">
+                <Droplet size={11} /> Doses déclarées vs théorique
+              </div>
+              {detail.doses.length === 0 ? (
+                <p className="text-xs text-muted">Aucune dose déclarée pour ce rendez-vous.</p>
+              ) : (
+                <div className="space-y-2">
+                  {detail.doses.map((d) => {
+                    const over = d.variancePct > 0;
+                    const flat = Math.abs(d.variancePct) < 0.001;
+                    return (
+                      <div key={d.productId} className="bg-surface rounded-xl p-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium">{d.productName}</span>
+                          {d.lockedAt && (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-muted">
+                              <ShieldCheck size={10} /> verrouillé
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-muted">
+                            Déclaré {d.dosesDeclared} · Théorique {d.dosesExpected}
+                          </span>
+                          <span className={[
+                            'font-mono font-semibold',
+                            flat ? 'text-muted' : over ? 'text-error' : 'text-accent',
+                          ].join(' ')}>
+                            {over ? '+' : ''}{d.variancePct.toFixed(0)}%
+                          </span>
+                        </div>
+                        {d.correctionNote && (
+                          <p className="text-[11px] text-ink/80 mt-2 leading-relaxed border-t border-line pt-2">
+                            Correction owner : « {d.correctionNote} »
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {detail.payment && (
+              <div className="border-t border-line pt-3 space-y-1.5">
+                <div className="text-[11px] font-medium text-muted mb-1">Encaissement</div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted">Montant ({detail.payment.method === 'cash' ? 'espèces' : 'carte'})</span>
+                  <span className="font-mono">{money(detail.payment.amount)} TND</span>
+                </div>
+                {detail.payment.commission > 0 && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted">Commission service</span>
+                    <span className="font-mono">{money(detail.payment.commission)} TND</span>
+                  </div>
+                )}
+                {detail.payment.productCommission > 0 && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted">Commission produit</span>
+                    <span className="font-mono">{money(detail.payment.productCommission)} TND</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (

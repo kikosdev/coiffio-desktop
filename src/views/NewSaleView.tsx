@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Search, X, Plus, Minus, CreditCard, Scissors, Wind, Palette, Package, Layers,
-  Loader2, Lock, Banknote, Check, ArrowRight, ShoppingCart,
+  Loader2, Lock, Banknote, Check, ArrowRight, ShoppingCart, Phone, Droplet,
 } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useCaisse } from '../stores/useCaisse';
+
+interface DoseConfigEntry {
+  productId: string;
+  productName: string;
+  doses: number;
+}
 
 interface CatalogItem {
   id: string;
@@ -12,6 +18,7 @@ interface CatalogItem {
   price: number;
   durationMin?: number;
   category: string;
+  doseConfig?: DoseConfigEntry[];
 }
 
 interface Barber {
@@ -31,6 +38,7 @@ interface CartLine {
 interface PosConfig {
   taxRate: number;
   currency: string;
+  lossControlAlertsEnabled: boolean;
 }
 
 const CATEGORY_ICON: Record<string, React.ElementType> = {
@@ -57,19 +65,22 @@ function cashSuggestions(total: number): number[] {
 export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
-  const [config, setConfig] = useState<PosConfig>({ taxRate: 0, currency: 'TND' });
+  const [config, setConfig] = useState<PosConfig>({ taxRate: 0, currency: 'TND', lossControlAlertsEnabled: false });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [mode, setMode] = useState<'walkin' | 'booked'>('walkin');
+  const [clientPhone, setClientPhone] = useState('');
+  const [clientName, setClientName] = useState('');
   const [activeBarber, setActiveBarber] = useState('');
   const [method, setMethod] = useState<'cash' | 'card'>('cash');
   const [charging, setCharging] = useState(false);
   const [chargeError, setChargeError] = useState<string | null>(null);
   const [charged, setCharged] = useState(false);
   const [cashModal, setCashModal] = useState(false);
+  // LC-3 (Prompt 3-bis) : dosesDeclared par produit — pré-rempli au théorique, modifiable.
+  const [doseDeclarations, setDoseDeclarations] = useState<Record<string, number>>({});
 
   const caisseSession = useCaisse((s) => s.session);
   const caisseLoading = useCaisse((s) => s.loading);
@@ -114,6 +125,36 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
     return map;
   }, [cart]);
 
+  /**
+   * LC-3 (Prompt 3-bis) : théorique attendu agrégé sur TOUT le ticket, produit par produit —
+   * `qty` de la ligne ignoré, comme côté serveur (`createWalkinSale`'s `serviceIds` ne
+   * multiplie pas non plus par `qty`). Simplification connue : si le MÊME produit est
+   * attendu par les services de DEUX barbiers différents dans un même ticket, l'UI ne montre
+   * qu'une seule saisie fusionnée (l'appel serveur reste correct côté charge(), qui refiltre
+   * par groupe — seul l'affichage ne distingue pas visuellement "quel barbier").
+   */
+  const expectedDoses = useMemo(() => {
+    const map = new Map<string, { productName: string; doses: number }>();
+    for (const line of cart) {
+      for (const dc of line.item.doseConfig ?? []) {
+        const existing = map.get(dc.productId);
+        if (existing) existing.doses += dc.doses;
+        else map.set(dc.productId, { productName: dc.productName, doses: dc.doses });
+      }
+    }
+    return map;
+  }, [cart]);
+
+  useEffect(() => {
+    setDoseDeclarations((prev) => {
+      const next: Record<string, number> = {};
+      for (const [productId, info] of expectedDoses) {
+        next[productId] = prev[productId] ?? info.doses;
+      }
+      return next;
+    });
+  }, [expectedDoses]);
+
   function addItem(item: CatalogItem) {
     if (!activeBarber) return;
     setCharged(false);
@@ -141,15 +182,26 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
     setCart([]);
     setCharged(false);
     setChargeError(null);
+    setClientPhone('');
+    setClientName('');
+    setDoseDeclarations({});
   }
 
   async function charge(received?: number) {
     if (cart.length === 0 || charging) return;
+    const phone = clientPhone.trim();
+    if (!phone) {
+      setChargeError('Le téléphone du client est requis — chaque service rendu ouvre une fiche RDV.');
+      return;
+    }
     setCharging(true);
     setChargeError(null);
     try {
-      // Une vente par barbier : `Payment.stylistId` est un scalaire (commission attribuée à
-      // UN staff), donc un ticket mixte produit un encaissement par barbier concerné.
+      // Une vente par barbier : `Payment.stylistId` (et `Appointment.stylistId`) est un
+      // scalaire (commission attribuée à UN staff), donc un ticket mixte produit un
+      // encaissement — et un RDV walk-in distinct (LC-0) — par barbier concerné. Même client,
+      // même téléphone : `resolveClient()` merge-on-phone, donc tous les RDV créés pointent
+      // vers le même `clientId` côté serveur.
       const byBarber = new Map<string, CartLine[]>();
       for (const line of cart) {
         byBarber.set(line.barberId, [...(byBarber.get(line.barberId) ?? []), line]);
@@ -160,9 +212,21 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
       // même la monnaie à rendre dans la modale, elle n'est simplement pas historisée.
       const single = byBarber.size === 1;
       for (const [barberId, lines] of byBarber) {
-        await api.post('/pos/sale', {
+        // LC-3 (Prompt 3-bis) : les doses de CE groupe uniquement — un produit attendu par un
+        // AUTRE barbier du même ticket ne doit pas se glisser dans cet appel (le serveur
+        // refuserait la ligne en 400, "produit non attendu pour ce rendez-vous").
+        const groupProductIds = new Set(lines.flatMap((l) => (l.item.doseConfig ?? []).map((dc) => dc.productId)));
+        const doses = config.lossControlAlertsEnabled
+          ? [...groupProductIds]
+              .filter((pid) => doseDeclarations[pid] !== undefined)
+              .map((productId) => ({ productId, dosesDeclared: doseDeclarations[productId] }))
+          : [];
+
+        await api.post('/pos/sale-with-appointment', {
           stylistId: barberId,
           method,
+          clientPhone: phone,
+          ...(clientName.trim() ? { clientName: clientName.trim() } : {}),
           ...(single && received !== undefined ? { received } : {}),
           items: lines.map((l) => ({
             kind: 'service' as const,
@@ -171,9 +235,13 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
             qty: l.qty,
             unitPrice: l.item.price,
           })),
+          ...(doses.length > 0 ? { doses } : {}),
         });
       }
       setCart([]);
+      setClientPhone('');
+      setClientName('');
+      setDoseDeclarations({});
       setCharged(true);
       setCashModal(false);
       // Le tiroir vient de bouger — le journal de la Caisse doit repartir du serveur.
@@ -370,21 +438,25 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
           )}
         </SliceHeader>
 
-        <div className="px-5 pb-4 shrink-0">
-          <div className="flex bg-surface rounded-lg p-0.5">
-            {(['walkin', 'booked'] as const).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                className={[
-                  'flex-1 py-1.5 text-xs font-medium rounded-md transition-all',
-                  mode === m ? 'bg-accent text-bg' : 'text-muted hover:text-ink',
-                ].join(' ')}
-              >
-                {m === 'walkin' ? 'Sans RDV' : 'Sur RDV'}
-              </button>
-            ))}
+        <div className="px-5 pb-4 shrink-0 space-y-1.5">
+          {/* Le service rendu ouvre toujours une fiche RDV (LC-0) — le téléphone est la clé
+              d'identité client (merge-on-phone), donc requis avant tout encaissement. Le nom
+              reste optionnel : défaut "Client" côté serveur si laissé vide. */}
+          <div className="relative">
+            <Phone size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              value={clientPhone}
+              onChange={(e) => setClientPhone(e.target.value)}
+              placeholder="Téléphone client (requis)"
+              className="w-full bg-surface border border-line rounded-lg pl-8 pr-3 py-2 text-xs text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors"
+            />
           </div>
+          <input
+            value={clientName}
+            onChange={(e) => setClientName(e.target.value)}
+            placeholder="Nom client (optionnel)"
+            className="w-full bg-surface border border-line rounded-lg px-3 py-2 text-xs text-ink placeholder:text-muted outline-none focus:border-accent/50 transition-colors"
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-1">
@@ -457,6 +529,31 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
           )}
         </div>
 
+        {/* LC-3 (Prompt 3-bis) : saisie inline, uniquement si le salon a opté dans le module
+            (A4) ET qu'au moins un service du panier a un doseConfig — zéro friction sinon. */}
+        {config.lossControlAlertsEnabled && expectedDoses.size > 0 && (
+          <div className="px-5 py-3 shrink-0 border-t border-line space-y-2">
+            <div className="text-[11px] font-medium text-muted flex items-center gap-1.5">
+              <Droplet size={11} /> Doses utilisées
+            </div>
+            {[...expectedDoses].map(([productId, info]) => (
+              <div key={productId} className="flex items-center justify-between gap-2">
+                <span className="text-xs flex-1 truncate" title={info.productName}>{info.productName}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={doseDeclarations[productId] ?? info.doses}
+                  onChange={(e) =>
+                    setDoseDeclarations((prev) => ({ ...prev, [productId]: Number(e.target.value) }))
+                  }
+                  className="w-16 bg-surface border border-line rounded-lg px-2 py-1 text-xs font-mono text-ink text-right outline-none focus:border-accent/50 transition-colors"
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="px-5 pt-3 pb-5 shrink-0 border-t border-line">
           {/* Le verrou de la tranche 3 vit DANS le pied, pas en surimpression : posé en
               overlay il recouvrait le sélecteur de paiement et le bouton d'encaissement. */}
@@ -512,10 +609,10 @@ export function NewSaleView({ onOpenCaisse }: { onOpenCaisse: () => void }) {
           ) : (
             <button
               onClick={() => (method === 'cash' ? setCashModal(true) : charge())}
-              disabled={cart.length === 0 || charging}
+              disabled={cart.length === 0 || charging || !clientPhone.trim()}
               className={[
                 'w-full py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all',
-                cart.length > 0 && !charging
+                cart.length > 0 && !charging && clientPhone.trim()
                   ? 'bg-accent text-bg hover:bg-amber-400 active:scale-[0.98]'
                   : 'bg-surface text-muted cursor-not-allowed',
               ].join(' ')}

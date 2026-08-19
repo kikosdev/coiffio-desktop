@@ -395,9 +395,10 @@ interface InvestigationData {
   doses: {
     productId: string;
     productName: string;
-    dosesDeclared: number;
+    /** `null` = attendu (théorique non nul) mais jamais déclaré — pas un 0 déclaré. */
+    dosesDeclared: number | null;
     dosesExpected: number;
-    variancePct: number;
+    variancePct: number | null;
     lockedAt: string | null;
     correctedBy?: string;
     correctionNote?: string;
@@ -505,8 +506,11 @@ function InvestigationModal({ appointmentId, onClose }: { appointmentId: string;
               ) : (
                 <div className="space-y-2">
                   {detail.doses.map((d) => {
-                    const over = d.variancePct > 0;
-                    const flat = Math.abs(d.variancePct) < 0.001;
+                    // `dosesDeclared`/`variancePct` sont `null` ensemble — attendu (théorique
+                    // non nul) mais jamais déclaré, pas une déclaration à 0.
+                    const declared = d.dosesDeclared !== null && d.variancePct !== null;
+                    const over = declared && d.variancePct! > 0;
+                    const flat = declared && Math.abs(d.variancePct!) < 0.001;
                     return (
                       <div key={d.productId} className="bg-surface rounded-xl p-3">
                         <div className="flex items-center justify-between mb-1">
@@ -519,14 +523,22 @@ function InvestigationModal({ appointmentId, onClose }: { appointmentId: string;
                         </div>
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-muted">
-                            Déclaré {d.dosesDeclared} · Théorique {d.dosesExpected}
+                            {declared
+                              ? `Déclaré ${d.dosesDeclared} · Théorique ${d.dosesExpected}`
+                              : `Théorique ${d.dosesExpected}`}
                           </span>
-                          <span className={[
-                            'font-mono font-semibold',
-                            flat ? 'text-muted' : over ? 'text-error' : 'text-accent',
-                          ].join(' ')}>
-                            {over ? '+' : ''}{d.variancePct.toFixed(0)}%
-                          </span>
+                          {declared ? (
+                            <span className={[
+                              'font-mono font-semibold',
+                              flat ? 'text-muted' : over ? 'text-error' : 'text-accent',
+                            ].join(' ')}>
+                              {over ? '+' : ''}{d.variancePct!.toFixed(0)}%
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-accent/10 text-accent border border-accent/20">
+                              Non déclarée
+                            </span>
+                          )}
                         </div>
                         {d.correctionNote && (
                           <p className="text-[11px] text-ink/80 mt-2 leading-relaxed border-t border-line pt-2">

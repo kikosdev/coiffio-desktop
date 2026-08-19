@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X, UserCheck, Banknote, CreditCard } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Clock, Plus, DollarSign, BookOpen, User, ChevronLeft, ChevronRight, X, UserCheck, Banknote, CreditCard, Droplet } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import { useBoard } from '../stores/useBoard';
 import { salonDateKey, formatSalonDayLabel } from '../lib/time';
@@ -267,6 +267,12 @@ function AddWalkinModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
 // ── Appointment detail modal ────────────────────────────────────────────────
 
+interface DoseConfigEntry {
+  productId: string;
+  productName: string;
+  doses: number;
+}
+
 interface PosApptDetail {
   id: string;
   status: string;
@@ -279,7 +285,7 @@ interface PosApptDetail {
   column: 'waiting' | 'in_chair' | 'done';
   client: { name: string; phone: string; email: string };
   stylist: { name: string; color: string };
-  services: { id: string; name: string; price: number; durationMin: number }[];
+  services: { id: string; name: string; price: number; durationMin: number; doseConfig?: DoseConfigEntry[] }[];
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -310,6 +316,13 @@ function AppointmentDetailModal({ apptId, onClose, onOpenCaisse }: {
   /** Le back refuse l'encaissement hors journée de caisse ouverte — on renvoie l'opérateur
    *  vers l'écran Caisse au lieu de le laisser devant un message d'erreur sans issue. */
   const [caisseBlocked, setCaisseBlocked] = useState(false);
+  // LC-3 — même pattern que NewSaleView.tsx : `config` ne porte QUE ce dont cette modale a
+  // besoin (l'opt-in du module), pas taxRate/currency (déjà en dur ici, `fmtMoney` ne les lit
+  // pas). Un échec de fetch laisse `false` par défaut — bloc caché, `pay()` part sans doses,
+  // jamais un blocage de la modale de paiement pour une info secondaire.
+  const [config, setConfig] = useState<{ lossControlAlertsEnabled: boolean }>({ lossControlAlertsEnabled: false });
+  // LC-3 : dosesDeclared par produit — pré-rempli au théorique, modifiable (NewSaleView.tsx:83).
+  const [doseDeclarations, setDoseDeclarations] = useState<Record<string, number>>({});
 
   const load = () => {
     setError('');
@@ -323,6 +336,40 @@ function AppointmentDetailModal({ apptId, onClose, onOpenCaisse }: {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apptId]);
+
+  useEffect(() => {
+    api.get<{ lossControlAlertsEnabled: boolean }>('/pos/config')
+      .then(setConfig)
+      .catch(() => {});
+  }, []);
+
+  /**
+   * LC-3 — théorique attendu agrégé sur TOUT le RDV, produit par produit (NewSaleView.tsx:
+   * 136-146), depuis `detail.services[].doseConfig` (déjà résolu côté back, pas de fetch
+   * catalogue ici). Un seul stylist par RDV planifié — pas de découpage par barbier à faire
+   * côté paiement, contrairement au ticket walk-in multi-barbier.
+   */
+  const expectedDoses = useMemo(() => {
+    const map = new Map<string, { productName: string; doses: number }>();
+    for (const s of detail?.services ?? []) {
+      for (const dc of s.doseConfig ?? []) {
+        const existing = map.get(dc.productId);
+        if (existing) existing.doses += dc.doses;
+        else map.set(dc.productId, { productName: dc.productName, doses: dc.doses });
+      }
+    }
+    return map;
+  }, [detail]);
+
+  useEffect(() => {
+    setDoseDeclarations((prev) => {
+      const next: Record<string, number> = {};
+      for (const [productId, info] of expectedDoses) {
+        next[productId] = prev[productId] ?? info.doses;
+      }
+      return next;
+    });
+  }, [expectedDoses]);
 
   async function checkIn() {
     setActing(true);
@@ -343,7 +390,18 @@ function AppointmentDetailModal({ apptId, onClose, onOpenCaisse }: {
     setActionError('');
     setCaisseBlocked(false);
     try {
-      await api.post(`/pos/appointments/${apptId}/pay`, { method });
+      // LC-3 — doses déclarées inline dans le MÊME appel (NewSaleView.tsx:214-238) : le back
+      // (`payAppointmentWithDoses`) les déclare et vérifie la garde dans une seule transaction,
+      // aucun POST /doses séparé.
+      const doses = config.lossControlAlertsEnabled
+        ? [...expectedDoses.keys()]
+            .filter((pid) => doseDeclarations[pid] !== undefined)
+            .map((productId) => ({ productId, dosesDeclared: doseDeclarations[productId] }))
+        : [];
+      await api.post(`/pos/appointments/${apptId}/pay`, {
+        method,
+        ...(doses.length > 0 ? { doses } : {}),
+      });
       await load();
       useBoard.getState().refresh();
     } catch (err) {
@@ -414,6 +472,32 @@ function AppointmentDetailModal({ apptId, onClose, onOpenCaisse }: {
                 ))}
               </div>
             </div>
+
+            {/* LC-3 : saisie inline, uniquement si le salon a opté dans le module (A4) ET
+                qu'au moins un service du RDV a un doseConfig — zéro friction sinon
+                (NewSaleView.tsx:532-534). */}
+            {config.lossControlAlertsEnabled && expectedDoses.size > 0 && (
+              <div className="border-t border-line pt-3 space-y-2">
+                <div className="text-[11px] font-medium text-muted flex items-center gap-1.5">
+                  <Droplet size={11} /> Doses utilisées
+                </div>
+                {[...expectedDoses].map(([productId, info]) => (
+                  <div key={productId} className="flex items-center justify-between gap-2">
+                    <span className="text-xs flex-1 truncate" title={info.productName}>{info.productName}</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={doseDeclarations[productId] ?? info.doses}
+                      onChange={(e) =>
+                        setDoseDeclarations((prev) => ({ ...prev, [productId]: Number(e.target.value) }))
+                      }
+                      className="w-16 bg-surface border border-line rounded-lg px-2 py-1 text-xs font-mono text-ink text-right outline-none focus:border-accent/50 transition-colors"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="border-t border-line pt-3 flex items-center justify-between">
               <span className="text-sm font-semibold">Total</span>
